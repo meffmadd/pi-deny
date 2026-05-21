@@ -1,0 +1,22 @@
+{
+  "name": "pi-deny",
+  "version": "0.1.0",
+  "description": "Shell command guard extension for pi coding agent",
+  "type": "module",
+  "main": "./src/index.ts",
+  "files": [
+    "src/",
+    "AGENTS.md"
+  ],
+  "scripts": {
+    "test": "node --import tsx --test tests/*.test.ts"
+  },
+  "keywords": ["pi", "shell", "guard", "security", "bash"],
+  "license": "MIT",
+  "pi": {
+    "extensions": ["./index.ts"]
+  },
+  "devDependencies": {
+    "tsx": "^4.0.0"
+  }
+}
