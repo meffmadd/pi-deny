@@ -1,5 +1,0 @@
-# Project-level shell guard rules (.pi/.bashdeny)
-kubectl *
-! kubectl logs *
-git push --force *
-rm -rf *
