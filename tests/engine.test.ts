@@ -13,7 +13,7 @@ import {
   parseLine,
   parseFile,
   checkCommand,
-} from "../src/engine";
+} from "../pi-deny/engine";
 
 // ═══════════════════════════════════════════════════════════════════
 // splitCommands

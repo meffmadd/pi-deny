@@ -3,20 +3,26 @@
   "version": "0.1.0",
   "description": "Shell command guard extension for pi coding agent",
   "type": "module",
-  "main": "./src/index.ts",
+  "main": "./pi-deny/index.ts",
   "files": [
-    "src/",
+    "pi-deny/",
     "AGENTS.md"
   ],
   "scripts": {
-    "test": "node --import tsx --test tests/*.test.ts"
+    "test": "node --import tsx --test tests/*.test.ts tests/scenarios/*.test.ts"
   },
   "keywords": ["pi", "shell", "guard", "security", "bash"],
   "license": "MIT",
   "pi": {
-    "extensions": ["./index.ts"]
+    "extensions": ["./pi-deny/index.ts"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.75.0",
+    "@earendil-works/pi-ai": "^0.75.0",
+    "@earendil-works/pi-tui": "^0.75.0"
   },
   "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.75.19",
     "tsx": "^4.0.0"
   }
 }

@@ -22,7 +22,7 @@ import {
   evaluate,
   parseFile,
   checkCommand,
-} from "./src/engine";
+} from "./engine";
 
 // ── Built-in defaults (always active, lowest priority) ─────────────
 

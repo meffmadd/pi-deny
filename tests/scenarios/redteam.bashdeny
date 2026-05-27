@@ -1,0 +1,5 @@
+# Red-team test rules — harmless commands, aggressive blocking
+# Goal: find parser bypasses that let the same shell execution slip through
+
+ls *
+echo danger *
