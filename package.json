@@ -1,7 +1,7 @@
 {
   "name": "pi-deny",
   "version": "0.1.0",
-  "description": "Shell command guard extension for pi coding agent",
+  "description": "Gitignore-like blocklist for pi's bash tool.",
   "type": "module",
   "main": "./pi-deny/index.ts",
   "files": [
