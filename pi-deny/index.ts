@@ -9,7 +9,7 @@
  *   ! kubectl logs *       # allow exception (last match wins, ! prefix)
  *   # comments             # skipped
  *
- * Guards both LLM-executed bash calls (tool_call) and user ! commands (user_bash).
+ * Guards LLM-executed bash calls (tool_call). User ! commands are never blocked.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -18,10 +18,8 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import {
   type Pattern,
-  splitCommands,
-  evaluate,
   parseFile,
-  checkCommand,
+  checkCommandDetailed,
 } from "./engine";
 
 // ── Built-in defaults (always active, lowest priority) ─────────────
@@ -68,31 +66,14 @@ export default function (pi: ExtensionAPI) {
   pi.on("tool_call", async (event, ctx) => {
     if (event.toolName !== "bash") return;
 
-    const denied = checkCommand(event.input.command as string, patterns);
-    if (!denied) return;
+    const match = checkCommandDetailed(event.input.command as string, patterns);
+    if (!match) return;
 
+    const msg = `command disallowed! Commands of the form "${match.rule}" are blocked.`;
     if (ctx.hasUI) {
-      ctx.ui.notify(`pi-deny: blocked "${denied.join(" ")}"`, "warning");
+      ctx.ui.notify(`pi-deny: ${msg}`, "error");
     }
-    return { block: true, reason: `pi-deny: ${denied.join(" ")}` };
+    return { block: true, reason: `pi-deny: ${msg}` };
   });
 
-  // ── Guard user ! commands ────────────────────────────────────
-
-  pi.on("user_bash", (event, ctx) => {
-    const denied = checkCommand(event.command, patterns);
-    if (!denied) return;
-
-    if (ctx.hasUI) {
-      ctx.ui.notify(`pi-deny: blocked "${denied.join(" ")}"`, "warning");
-    }
-    return {
-      result: {
-        output: `[pi-deny] blocked: ${denied.join(" ")}`,
-        exitCode: 1,
-        cancelled: false,
-        truncated: false,
-      },
-    };
-  });
 }

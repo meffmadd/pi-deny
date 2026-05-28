@@ -78,6 +78,14 @@ npm install
 npm test                 # 55 tests, all pure functions
 ```
 
+## Release
+
+```bash
+npx bumpp               # prompts for patch/minor/major, commits + tags
+npx bumpp 1.2.3          # exact version
+npx bumpp -y             # skip confirmation
+```
+
 ## Structure
 
 ```

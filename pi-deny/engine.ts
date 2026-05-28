@@ -167,3 +167,30 @@ export function checkCommand(input: string, patterns: Pattern[]): string[] | und
   }
   return undefined;
 }
+
+/**
+ * Like checkCommand, but also returns the matching deny rule text.
+ * Returns { tokens, rule } for the first denied segment, or undefined if all pass.
+ */
+export function checkCommandDetailed(
+  input: string,
+  patterns: Pattern[],
+): { tokens: string[]; rule: string } | undefined {
+  for (const tokens of splitCommands(input)) {
+    if (tokens.length === 0) continue;
+    const match = findMatch(tokens, patterns);
+    if (match && !match.allow) {
+      return { tokens, rule: match.raw };
+    }
+  }
+  return undefined;
+}
+
+/** Find the last matching pattern, or undefined if none match. */
+function findMatch(tokens: string[], patterns: Pattern[]): Pattern | undefined {
+  let last: Pattern | undefined;
+  for (const p of patterns) {
+    if (matchPattern(tokens, p.tokens)) last = p;
+  }
+  return last;
+}
