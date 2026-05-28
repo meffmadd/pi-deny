@@ -17,12 +17,12 @@
     "extensions": ["./pi-deny/index.ts"]
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.75.0",
-    "@earendil-works/pi-ai": "^0.75.0",
-    "@earendil-works/pi-tui": "^0.75.0"
+    "@earendil-works/pi-coding-agent": "^0.76.0",
+    "@earendil-works/pi-ai": "^0.76.0",
+    "@earendil-works/pi-tui": "^0.76.0"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.75.19",
+    "@earendil-works/pi-coding-agent": "^0.76.0",
     "tsx": "^4.0.0"
   }
 }
