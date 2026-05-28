@@ -7,7 +7,7 @@ Shell command guard extension for [pi](https://github.com/earendil-works/pi-mono
 | Layer | What |
 |-------|------|
 | `src/engine.ts` | Pure functions: `splitCommands`, `matchPattern`, `evaluate` — zero deps, fully tested |
-| `src/index.ts` | pi extension entry point — hooks `tool_call` (LLM) and `user_bash` (`!` commands) |
+| `src/index.ts` | pi extension entry point — hooks `tool_call` (LLM bash), user `!` commands are never blocked |
 | `.pi/.bashdeny` | Project-local rules |
 | `~/.pi/.bashdeny` | Global rules (applies everywhere) |
 
@@ -90,7 +90,7 @@ npx bumpp -y             # skip confirmation
 
 ```
 pi-deny/
-  src/
+  pi-deny/
     engine.ts            # splitCommands, matchPattern, evaluate, parseFile
     index.ts             # pi extension entry point
   tests/
