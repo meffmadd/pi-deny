@@ -62,36 +62,37 @@ describe("splitCommands", () => {
 
 describe("matchPattern", () => {
   const cases: [string[], string[], boolean][] = [
-    // Basic wildcard
-    [["kubectl", "delete", "pod"], ["kubectl", "delete", "*"], true],
-    [["kubectl", "delete"], ["kubectl", "delete", "*"], true],
-    [["kubectl", "describe", "delete-pod"], ["kubectl", "delete", "*"], false],
-    [["echo", "hello"], ["kubectl", "delete", "*"], false],
+    // Basic scan-forward with implicit trailing
+    [["kubectl", "delete", "pod"], ["kubectl", "delete"], true],
+    [["kubectl", "delete"], ["kubectl", "delete"], true],
+    [["kubectl", "describe", "delete-pod"], ["kubectl", "delete"], false],
+    [["echo", "hello"], ["kubectl", "delete"], false],
 
-    // Scan-forward (skips interspersed flags)
-    [["git", "-C", "/x", "push", "--force", "origin"], ["git", "push", "--force", "*"], true],
-    [["git", "push", "origin", "main"], ["git", "push", "--force", "*"], false],
-    [["sudo", "kubectl", "delete", "pod"], ["kubectl", "delete", "*"], true],
-    [["sudo", "-u", "root", "kubectl", "delete", "pod"], ["kubectl", "delete", "*"], true],
+    // Scan-forward (skips interspersed flags, implicit trailing)
+    [["git", "-C", "/x", "push", "--force", "origin"], ["git", "push", "--force"], true],
+    [["git", "push", "origin", "main"], ["git", "push", "--force"], false],
+    [["sudo", "kubectl", "delete", "pod"], ["kubectl", "delete"], true],
+    [["sudo", "-u", "root", "kubectl", "delete", "pod"], ["kubectl", "delete"], true],
 
-    // Exact match (no wildcard)
+    // Implicit trailing (extra tokens after last pattern token are allowed)
     [["git", "push"], ["git", "push"], true],
-    [["git", "push", "--force"], ["git", "push"], false],
+    [["git", "push", "--force"], ["git", "push"], true],
     [["git"], ["git", "push"], false],
-    [["git", "push", "extra"], ["git", "push"], false],
+    [["git", "push", "extra"], ["git", "push"], true],
 
-    // Wildcard mid-pattern
-    [["rm", "-rf", "/", "foo"], ["rm", "-rf", "*"], true],
-    [["rm", "-r", "/tmp"], ["rm", "-rf", "*"], false],
+    // Implicit trailing (path args after the last pattern token don't matter)
+    [["rm", "-rf", "/", "foo"], ["rm", "-rf"], true],
+    [["rm", "-r", "/tmp"], ["rm", "-rf"], false],
 
-    // Broader wildcard
-    [["kubectl", "logs", "nginx"], ["kubectl", "*"], true],
-    [["kubectl"], ["kubectl", "*"], true],
-    [["docker", "rm", "container"], ["kubectl", "*"], false],
+    // Single token matches any command starting with it
+    [["kubectl", "logs", "nginx"], ["kubectl"], true],
+    [["kubectl"], ["kubectl"], true],
+    [["docker", "rm", "container"], ["kubectl"], false],
 
-    // Multi-token after wildcard (wildcard consumes rest, never reached)
-    // This pattern doesn't make practical sense but we define the behavior
-    [["a", "b", "c"], ["a", "*", "c"], true],  // * consumes b,c — "c" after * is irrelevant
+    // Implicit trailing: partial match at end works
+    [["ls", "-la", "/tmp"], ["ls"], true],
+    [["echo", "-s", "danger", "hello"], ["echo", "danger"], true],
+    [["echo", "-s", "hello"], ["echo", "danger"], false],
   ];
 
   for (const [tokens, pat, expected] of cases) {
@@ -107,10 +108,10 @@ describe("matchPattern", () => {
 
 describe("evaluate", () => {
   const rules = [
-    parseLine("kubectl *"),
-    parseLine("! kubectl logs *"),
-    parseLine("git push --force *"),
-    parseLine("rm -rf *"),
+    parseLine("kubectl"),
+    parseLine("! kubectl logs"),
+    parseLine("git push --force"),
+    parseLine("rm -rf"),
   ];
 
   const cases: [string[], "deny" | "pass"][] = [
@@ -142,10 +143,10 @@ describe("evaluate", () => {
   }
 
   it("later rule overrides earlier (last-match-wins)", () => {
-    // `kubectl *` denies, then `! kubectl delete *` allows — last wins
+    // `kubectl` denies, then `! kubectl delete` allows — last wins
     const rules = [
-      parseLine("kubectl *"),
-      parseLine("! kubectl delete *"),
+      parseLine("kubectl"),
+      parseLine("! kubectl delete"),
     ];
     assert.strictEqual(evaluate(["kubectl", "delete", "pod"], rules), "pass");
     assert.strictEqual(evaluate(["kubectl", "get", "pod"], rules), "deny");
@@ -158,23 +159,23 @@ describe("evaluate", () => {
 
 describe("parseLine", () => {
   it("parses deny rule", () => {
-    const p = parseLine("kubectl delete *");
+    const p = parseLine("kubectl delete");
     assert.strictEqual(p.allow, false);
-    assert.deepStrictEqual(p.tokens, ["kubectl", "delete", "*"]);
-    assert.strictEqual(p.raw, "kubectl delete *");
+    assert.deepStrictEqual(p.tokens, ["kubectl", "delete"]);
+    assert.strictEqual(p.raw, "kubectl delete");
   });
 
   it("parses allow rule", () => {
-    const p = parseLine("! kubectl logs *");
+    const p = parseLine("! kubectl logs");
     assert.strictEqual(p.allow, true);
-    assert.deepStrictEqual(p.tokens, ["kubectl", "logs", "*"]);
-    assert.strictEqual(p.raw, "! kubectl logs *");
+    assert.deepStrictEqual(p.tokens, ["kubectl", "logs"]);
+    assert.strictEqual(p.raw, "! kubectl logs");
   });
 
   it("handles extra whitespace", () => {
-    const p = parseLine("  !  git   push  --force  *  ");
+    const p = parseLine("  !  git   push  --force  ");
     assert.strictEqual(p.allow, true);
-    assert.deepStrictEqual(p.tokens, ["git", "push", "--force", "*"]);
+    assert.deepStrictEqual(p.tokens, ["git", "push", "--force"]);
   });
 });
 
@@ -182,18 +183,18 @@ describe("parseFile", () => {
   it("filters comments and empty lines", () => {
     const content = `
 # Deny all kubectl
-kubectl *
+kubectl
 
 # But allow logs
-! kubectl logs *
+! kubectl logs
 
-git push --force *
+git push --force
 `;
     const patterns = parseFile(content);
     assert.strictEqual(patterns.length, 3);
-    assert.deepStrictEqual(patterns[0].tokens, ["kubectl", "*"]);
-    assert.deepStrictEqual(patterns[1].tokens, ["kubectl", "logs", "*"]);
-    assert.deepStrictEqual(patterns[2].tokens, ["git", "push", "--force", "*"]);
+    assert.deepStrictEqual(patterns[0].tokens, ["kubectl"]);
+    assert.deepStrictEqual(patterns[1].tokens, ["kubectl", "logs"]);
+    assert.deepStrictEqual(patterns[2].tokens, ["git", "push", "--force"]);
   });
 });
 
@@ -203,9 +204,9 @@ git push --force *
 
 describe("checkCommand", () => {
   const rules = [
-    parseLine("kubectl delete *"),
-    parseLine("git push --force *"),
-    parseLine("rm -rf *"),
+    parseLine("kubectl delete"),
+    parseLine("git push --force"),
+    parseLine("rm -rf"),
   ];
 
   const cases: [string, string | undefined][] = [

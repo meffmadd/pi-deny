@@ -15,14 +15,14 @@ Shell command guard extension for [pi](https://github.com/earendil-works/pi-mono
 
 ```
 # .bashdeny — one pattern per line
-kubectl *               # deny all kubectl
-! kubectl logs *         # except logs
-git push --force *       # deny force pushes
-rm -rf *                 # deny recursive force remove
-eval *                   # deny eval (built-in default)
+kubectl                 # deny all kubectl
+! kubectl logs           # except logs
+git push --force         # deny force pushes
+rm -rf                   # deny recursive force remove
+eval                     # deny eval (built-in default)
 ```
 
-- `*` matches any remaining tokens (prefix + wildcard)
+- Trailing tokens are **implicitly allowed** — `rm -rf` matches `rm -rf /tmp`
 - `!` prefix = allow-exception (last matching rule wins)
 - `#` lines are comments
 - Rules cascade: **built-ins < global < project** — project rules can override everything with `!`
@@ -32,9 +32,17 @@ eval *                   # deny eval (built-in default)
 **Scan-forward matching** — skips interspersed flags automatically:
 
 ```
-Rule:      git push --force *
+Rule:      git push --force
 Command:   git -C /repo push --force origin main  →  DENIED
            git push origin main                    →  PASS (no --force)
+```
+
+**Implicit trailing** — arguments after the last pattern token are allowed:
+
+```
+Rule:      rm -rf
+Command:   rm -rf /          →  DENIED
+           rm -rf /tmp/foo   →  DENIED
 ```
 
 **Command separation** — splits on `&&`, `||`, `;`, `|`, `&` (respecting quotes):
@@ -54,8 +62,8 @@ cp -r src ~/.pi/agent/extensions/pi-deny/
 
 # Create your global rules
 cat > ~/.pi/.bashdeny << 'EOF'
-git push --force *
-rm -rf *
+git push --force
+rm -rf
 EOF
 ```
 
@@ -64,8 +72,8 @@ EOF
 ```bash
 # Just create a .pi/.bashdeny file in your project
 cat > .pi/.bashdeny << 'EOF'
-kubectl delete *
-! kubectl logs *
+kubectl delete
+! kubectl logs
 EOF
 ```
 

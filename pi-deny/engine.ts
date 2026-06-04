@@ -82,27 +82,15 @@ export function splitCommands(input: string): string[][] {
 
 // ── Pattern matching ───────────────────────────────────────────────
 
-/**
- * Scan-forward token match. Skips interspersed flags and options.
- * `*` consumes all remaining tokens (prefix + wildcard match).
- *
- *   match(["git","-C","/x","push","--force"], ["git","push","--force","*"]) → true
- *   match(["git","push","origin"],               ["git","push","--force","*"]) → false
- *   match(["kubectl","delete","pod"],            ["kubectl","delete","*"])     → true
- *   match(["kubectl","describe","delete-pod"],   ["kubectl","delete","*"])     → false
- *   match(["git","push"],                        ["git","push"])               → true
- *   match(["git","push","--force"],              ["git","push"])               → false
- */
+/** Scan-forward token match. Skips interspersed tokens. Trailing tokens implicitly allowed. */
 export function matchPattern(tokens: string[], pat: string[]): boolean {
   let ci = 0;
   for (const pt of pat) {
-    if (pt === "*") return true; // consumes all remaining tokens
     while (ci < tokens.length && tokens[ci] !== pt) ci++;
     if (ci >= tokens.length) return false;
     ci++;
   }
-  // No wildcard: require exact token-count match
-  return ci >= tokens.length;
+  return true;
 }
 
 /**

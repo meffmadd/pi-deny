@@ -60,7 +60,7 @@ interface RuleSuite {
 
 const suites: RuleSuite[] = [
   {
-    label: "ls *",
+    label: "ls",
     canonical: "ls /tmp",
     attempts: [
       // Straightforward calls — should be caught by the rule
@@ -88,7 +88,7 @@ const suites: RuleSuite[] = [
     ],
   },
   {
-    label: "echo danger *",
+    label: "echo danger",
     canonical: "echo danger hello",
     attempts: [
       // Straightforward

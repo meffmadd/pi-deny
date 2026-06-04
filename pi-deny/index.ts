@@ -5,8 +5,8 @@
  * Rule files cascade: .pi/.bashdeny (project) > ~/.pi/.bashdeny (global) > built-ins.
  *
  * Format:
- *   git push --force *     # deny (with * wildcard for remaining args)
- *   ! kubectl logs *       # allow exception (last match wins, ! prefix)
+ *   git push --force       # deny — trailing args implicitly allowed
+ *   ! kubectl logs         # allow exception (last match wins, ! prefix)
  *   # comments             # skipped
  *
  * Guards LLM-executed bash calls (tool_call). User ! commands are never blocked.
@@ -25,7 +25,7 @@ import {
 // ── Built-in defaults (always active, lowest priority) ─────────────
 
 const BUILTIN_RULES = `
-eval *
+eval
 `.trim();
 
 function loadPatterns(cwd: string): Pattern[] {
