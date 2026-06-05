@@ -111,348 +111,119 @@ describe("matchPattern", () => {
 // ═══════════════════════════════════════════════════════════════════
 
 describe("unwrapCommand", () => {
-  // ── bare command (no wrapper) ──────────────────────────────────
+  const cases: [string[], string[] | null][] = [
+    // ═══════════════════════════════════════════════════════════
+    // bare command (no wrapper)
+    // ═══════════════════════════════════════════════════════════
 
-  it("bare command passes through unchanged", () => {
-    assert.deepStrictEqual(
-      unwrapCommand(["kubectl", "delete", "pod"]),
-      ["kubectl", "delete", "pod"],
-    );
-  });
+    [["kubectl", "delete", "pod"], ["kubectl", "delete", "pod"]],
+    [["git", "-C", "/x", "push", "--force"], ["git", "-C", "/x", "push", "--force"]],
 
-  it("bare command with flags unchanged", () => {
-    assert.deepStrictEqual(
-      unwrapCommand(["git", "-C", "/x", "push", "--force"]),
-      ["git", "-C", "/x", "push", "--force"],
-    );
-  });
+    // ═══════════════════════════════════════════════════════════
+    // sudo
+    // ═══════════════════════════════════════════════════════════
 
-  // ── passthrough wrappers ───────────────────────────────────────
+    [["sudo", "kubectl", "delete", "pod"], ["kubectl", "delete", "pod"]],
+    [["sudo", "-E", "kubectl", "delete", "pod"], ["kubectl", "delete", "pod"]],
+    // -u consumes next token as user value (even if it looks like a command name)
+    [["sudo", "-u", "kubectl", "echo", "hello"], ["echo", "hello"]],
+    [["sudo", "-u", "root", "kubectl", "delete", "pod"], ["kubectl", "delete", "pod"]],
+    [["sudo", "--user=root", "kubectl", "delete", "pod"], ["kubectl", "delete", "pod"]],
+    [["sudo", "-E", "-u", "root", "-g", "admin", "rm", "-rf", "/"], ["rm", "-rf", "/"]],
 
-  it("strips sudo", () => {
-    assert.deepStrictEqual(
-      unwrapCommand(["sudo", "kubectl", "delete", "pod"]),
-      ["kubectl", "delete", "pod"],
-    );
-  });
+    // ═══════════════════════════════════════════════════════════
+    // other passthrough wrappers
+    // ═══════════════════════════════════════════════════════════
 
-  it("strips sudo with boolean flag", () => {
-    assert.deepStrictEqual(
-      unwrapCommand(["sudo", "-E", "kubectl", "delete", "pod"]),
-      ["kubectl", "delete", "pod"],
-    );
-  });
+    [["nohup", "kubectl", "delete", "pod"], ["kubectl", "delete", "pod"]],
+    [["nice", "-n", "-5", "kubectl", "delete", "pod"], ["kubectl", "delete", "pod"]],
+    // watch -n2 (inline value, one token)
+    [["watch", "-n2", "kubectl", "delete", "pod"], ["kubectl", "delete", "pod"]],
+    // watch -n 2 (space-separated value)
+    [["watch", "-n", "2", "kubectl", "delete", "pod"], ["kubectl", "delete", "pod"]],
+    [["ionice", "-c", "3", "rm", "-rf", "/"], ["rm", "-rf", "/"]],
+    [["time", "kubectl", "delete", "pod"], ["kubectl", "delete", "pod"]],
+    [["setsid", "kubectl", "delete", "pod"], ["kubectl", "delete", "pod"]],
+    [["taskset", "-c", "0-3", "kubectl", "delete", "pod"], ["kubectl", "delete", "pod"]],
+    [["stdbuf", "-o0", "kubectl", "delete", "pod"], ["kubectl", "delete", "pod"]],
+    [["systemd-run", "--user", "--property=CPUQuota=50%", "kubectl", "delete", "pod"], ["kubectl", "delete", "pod"]],
+    [["unshare", "-n", "kubectl", "delete", "pod"], ["kubectl", "delete", "pod"]],
+    [["nsenter", "-t", "1234", "kubectl", "delete", "pod"], ["kubectl", "delete", "pod"]],
+    [["prlimit", "kubectl", "delete", "pod"], ["kubectl", "delete", "pod"]],
 
-  it("sudo -u consumes the user value, command follows", () => {
-    assert.deepStrictEqual(
-      unwrapCommand(["sudo", "-u", "kubectl", "echo", "hello"]),
-      ["echo", "hello"],
-    );
-  });
+    // ═══════════════════════════════════════════════════════════
+    // env
+    // ═══════════════════════════════════════════════════════════
 
-  it("sudo -u root (user is not the command)", () => {
-    assert.deepStrictEqual(
-      unwrapCommand(["sudo", "-u", "root", "kubectl", "delete", "pod"]),
-      ["kubectl", "delete", "pod"],
-    );
-  });
+    [["env", "FOO=bar", "DEBUG=1", "kubectl", "delete", "pod"], ["kubectl", "delete", "pod"]],
+    [["env", "kubectl", "delete", "pod"], ["kubectl", "delete", "pod"]],
+    [["env", "-i", "FOO=bar", "kubectl", "delete", "pod"], ["kubectl", "delete", "pod"]],
 
-  it("sudo --user=root (inline value, no extra token consumed)", () => {
-    assert.deepStrictEqual(
-      unwrapCommand(["sudo", "--user=root", "kubectl", "delete", "pod"]),
-      ["kubectl", "delete", "pod"],
-    );
-  });
+    // ═══════════════════════════════════════════════════════════
+    // chroot / flock (consume one positional arg)
+    // ═══════════════════════════════════════════════════════════
 
-  it("sudo -u kubectl echo (value looks like a command but is -u value)", () => {
-    // -u consumes "kubectl" as the user, leaving "echo" as the real command
-    assert.deepStrictEqual(
-      unwrapCommand(["sudo", "-u", "kubectl", "echo", "hello"]),
-      ["echo", "hello"],
-    );
-  });
+    [["chroot", "/newroot", "kubectl", "delete", "pod"], ["kubectl", "delete", "pod"]],
+    [["flock", "/var/lock/mylock", "kubectl", "delete", "pod"], ["kubectl", "delete", "pod"]],
+    [["flock", "-x", "-w", "5", "/var/lock/mylock", "rm", "-rf", "/"], ["rm", "-rf", "/"]],
 
-  it("sudo with multiple flags", () => {
-    assert.deepStrictEqual(
-      unwrapCommand(["sudo", "-E", "-u", "root", "-g", "admin", "rm", "-rf", "/"]),
-      ["rm", "-rf", "/"],
-    );
-  });
+    // ═══════════════════════════════════════════════════════════
+    // c-wrappers (su -c, bash -c, etc.)
+    // ═══════════════════════════════════════════════════════════
 
-  it("strips nohup", () => {
-    assert.deepStrictEqual(
-      unwrapCommand(["nohup", "kubectl", "delete", "pod"]),
-      ["kubectl", "delete", "pod"],
-    );
-  });
+    [["su", "-c", "kubectl delete pod"], ["kubectl", "delete", "pod"]],
+    [["su", "-c", "rm -rf /"], ["rm", "-rf", "/"]],
+    [["su", "-", "root", "-c", "rm -rf /"], ["rm", "-rf", "/"]],
+    [["bash", "-c", "kubectl delete pod"], ["kubectl", "delete", "pod"]],
+    [["sh", "-c", "kubectl delete pod"], ["kubectl", "delete", "pod"]],
+    [["zsh", "-c", "kubectl delete pod"], ["kubectl", "delete", "pod"]],
+    [["dash", "-c", "kubectl delete pod"], ["kubectl", "delete", "pod"]],
 
-  it("strips nice -n", () => {
-    assert.deepStrictEqual(
-      unwrapCommand(["nice", "-n", "-5", "kubectl", "delete", "pod"]),
-      ["kubectl", "delete", "pod"],
-    );
-  });
+    // ═══════════════════════════════════════════════════════════
+    // chained wrappers
+    // ═══════════════════════════════════════════════════════════
 
-  it("strips watch -n2", () => {
-    // -n2 is one token (flag with inline value)
-    assert.deepStrictEqual(
-      unwrapCommand(["watch", "-n2", "kubectl", "delete", "pod"]),
-      ["kubectl", "delete", "pod"],
-    );
-  });
+    [["sudo", "nice", "-n", "-5", "kubectl", "delete", "pod"], ["kubectl", "delete", "pod"]],
+    [["sudo", "su", "-c", "kubectl delete pod"], ["kubectl", "delete", "pod"]],
+    [["sudo", "bash", "-c", "rm -rf /"], ["rm", "-rf", "/"]],
+    [["sudo", "nice", "-n", "-5", "su", "-c", "rm -rf /"], ["rm", "-rf", "/"]],
+    [["sudo", "-u", "root", "nice", "-n", "-20", "bash", "-c", "kubectl delete pod"], ["kubectl", "delete", "pod"]],
 
-  it("strips watch -n 2", () => {
-    // -n takes the next token as value
-    assert.deepStrictEqual(
-      unwrapCommand(["watch", "-n", "2", "kubectl", "delete", "pod"]),
-      ["kubectl", "delete", "pod"],
-    );
-  });
+    // ═══════════════════════════════════════════════════════════
+    // nested -c (wrapper inside -c string)
+    // ═══════════════════════════════════════════════════════════
 
-  it("strips ionice", () => {
-    assert.deepStrictEqual(
-      unwrapCommand(["ionice", "-c", "3", "rm", "-rf", "/"]),
-      ["rm", "-rf", "/"],
-    );
-  });
+    [["su", "-c", "sudo kubectl delete pod"], ["kubectl", "delete", "pod"]],
 
-  it("strips time", () => {
-    assert.deepStrictEqual(
-      unwrapCommand(["time", "kubectl", "delete", "pod"]),
-      ["kubectl", "delete", "pod"],
-    );
-  });
+    // ═══════════════════════════════════════════════════════════
+    // null returns (invalid / unwrappable)
+    // ═══════════════════════════════════════════════════════════
 
-  it("strips setsid", () => {
-    assert.deepStrictEqual(
-      unwrapCommand(["setsid", "kubectl", "delete", "pod"]),
-      ["kubectl", "delete", "pod"],
-    );
-  });
+    [[], null],
+    [["sudo"], null],
+    [["sudo", "-E", "-u", "root"], null],
+    [["su", "-", "root"], null],
+    [["su", "-c"], null],
+    [["bash"], null],
 
-  it("strips taskset -c", () => {
-    assert.deepStrictEqual(
-      unwrapCommand(["taskset", "-c", "0-3", "kubectl", "delete", "pod"]),
-      ["kubectl", "delete", "pod"],
-    );
-  });
+    // ═══════════════════════════════════════════════════════════
+    // unknown wrapper passes through unchanged
+    // ═══════════════════════════════════════════════════════════
 
-  it("strips stdbuf", () => {
-    assert.deepStrictEqual(
-      unwrapCommand(["stdbuf", "-o0", "kubectl", "delete", "pod"]),
-      ["kubectl", "delete", "pod"],
-    );
-  });
+    [["unknown_wrapper", "kubectl", "delete"], ["unknown_wrapper", "kubectl", "delete"]],
+  ];
 
-  it("strips systemd-run", () => {
-    assert.deepStrictEqual(
-      unwrapCommand(["systemd-run", "--user", "--property=CPUQuota=50%", "kubectl", "delete", "pod"]),
-      ["kubectl", "delete", "pod"],
-    );
-  });
+  for (const [input, expected] of cases) {
+    it(`${JSON.stringify(input)} → ${expected === null ? "null" : JSON.stringify(expected)}`, () => {
+      if (expected === null) {
+        assert.strictEqual(unwrapCommand(input), null);
+      } else {
+        assert.deepStrictEqual(unwrapCommand(input), expected);
+      }
+    });
+  }
 
-  it("strips unshare", () => {
-    assert.deepStrictEqual(
-      unwrapCommand(["unshare", "-n", "kubectl", "delete", "pod"]),
-      ["kubectl", "delete", "pod"],
-    );
-  });
-
-  it("strips nsenter -t", () => {
-    assert.deepStrictEqual(
-      unwrapCommand(["nsenter", "-t", "1234", "kubectl", "delete", "pod"]),
-      ["kubectl", "delete", "pod"],
-    );
-  });
-
-  // ── env ────────────────────────────────────────────────────────
-
-  it("env strips VAR=val assignments", () => {
-    assert.deepStrictEqual(
-      unwrapCommand(["env", "FOO=bar", "DEBUG=1", "kubectl", "delete", "pod"]),
-      ["kubectl", "delete", "pod"],
-    );
-  });
-
-  it("env with no assignments", () => {
-    assert.deepStrictEqual(
-      unwrapCommand(["env", "kubectl", "delete", "pod"]),
-      ["kubectl", "delete", "pod"],
-    );
-  });
-
-  it("env with flags mixed in", () => {
-    assert.deepStrictEqual(
-      unwrapCommand(["env", "-i", "FOO=bar", "kubectl", "delete", "pod"]),
-      ["kubectl", "delete", "pod"],
-    );
-  });
-
-  // ── chroot ─────────────────────────────────────────────────────
-
-  it("chroot strips root path", () => {
-    assert.deepStrictEqual(
-      unwrapCommand(["chroot", "/newroot", "kubectl", "delete", "pod"]),
-      ["kubectl", "delete", "pod"],
-    );
-  });
-
-  // ── flock ──────────────────────────────────────────────────────
-
-  it("flock strips lock file", () => {
-    assert.deepStrictEqual(
-      unwrapCommand(["flock", "/var/lock/mylock", "kubectl", "delete", "pod"]),
-      ["kubectl", "delete", "pod"],
-    );
-  });
-
-  it("flock with flags and lock file", () => {
-    assert.deepStrictEqual(
-      unwrapCommand(["flock", "-x", "-w", "5", "/var/lock/mylock", "rm", "-rf", "/"]),
-      ["rm", "-rf", "/"],
-    );
-  });
-
-  // ── c-wrappers (su -c, bash -c, etc.) ─────────────────────────
-
-  it("su -c extracts sub-command", () => {
-    assert.deepStrictEqual(
-      unwrapCommand(["su", "-c", "kubectl delete pod"]),
-      ["kubectl", "delete", "pod"],
-    );
-  });
-
-  it("su -c with multi-word command (quotes already stripped by splitCommands)", () => {
-    // splitCommands strips shell quotes from the input, so the -c argument
-    // token arrives without surrounding quote characters.
-    assert.deepStrictEqual(
-      unwrapCommand(["su", "-c", "rm -rf /"]),
-      ["rm", "-rf", "/"],
-    );
-  });
-
-  it("su - user -c extracts sub-command", () => {
-    assert.deepStrictEqual(
-      unwrapCommand(["su", "-", "root", "-c", "rm -rf /"]),
-      ["rm", "-rf", "/"],
-    );
-  });
-
-  it("bash -c extracts sub-command", () => {
-    assert.deepStrictEqual(
-      unwrapCommand(["bash", "-c", "kubectl delete pod"]),
-      ["kubectl", "delete", "pod"],
-    );
-  });
-
-  it("sh -c extracts sub-command", () => {
-    assert.deepStrictEqual(
-      unwrapCommand(["sh", "-c", "kubectl delete pod"]),
-      ["kubectl", "delete", "pod"],
-    );
-  });
-
-  it("zsh -c extracts sub-command", () => {
-    assert.deepStrictEqual(
-      unwrapCommand(["zsh", "-c", "kubectl delete pod"]),
-      ["kubectl", "delete", "pod"],
-    );
-  });
-
-  it("dash -c extracts sub-command", () => {
-    assert.deepStrictEqual(
-      unwrapCommand(["dash", "-c", "kubectl delete pod"]),
-      ["kubectl", "delete", "pod"],
-    );
-  });
-
-  it("su without -c returns null (interactive)", () => {
-    assert.strictEqual(
-      unwrapCommand(["su", "-", "root"]),
-      null,
-    );
-  });
-
-  it("su with -c but no argument returns null", () => {
-    assert.strictEqual(
-      unwrapCommand(["su", "-c"]),
-      null,
-    );
-  });
-
-  it("bash without -c returns null", () => {
-    assert.strictEqual(
-      unwrapCommand(["bash"]),
-      null,
-    );
-  });
-
-  // ── chained wrappers ───────────────────────────────────────────
-
-  it("sudo nice (chained passthrough)", () => {
-    assert.deepStrictEqual(
-      unwrapCommand(["sudo", "nice", "-n", "-5", "kubectl", "delete", "pod"]),
-      ["kubectl", "delete", "pod"],
-    );
-  });
-
-  it("sudo su -c (passthrough + c-wrapper)", () => {
-    assert.deepStrictEqual(
-      unwrapCommand(["sudo", "su", "-c", "kubectl delete pod"]),
-      ["kubectl", "delete", "pod"],
-    );
-  });
-
-  it("sudo bash -c (passthrough + c-wrapper)", () => {
-    assert.deepStrictEqual(
-      unwrapCommand(["sudo", "bash", "-c", "rm -rf /"]),
-      ["rm", "-rf", "/"],
-    );
-  });
-
-  it("sudo nice su -c (three wrappers deep)", () => {
-    assert.deepStrictEqual(
-      unwrapCommand(["sudo", "nice", "-n", "-5", "su", "-c", "rm -rf /"]),
-      ["rm", "-rf", "/"],
-    );
-  });
-
-  it("sudo -u root nice -n -20 bash -c (flags + three wrappers)", () => {
-    assert.deepStrictEqual(
-      unwrapCommand(["sudo", "-u", "root", "nice", "-n", "-20", "bash", "-c", "kubectl delete pod"]),
-      ["kubectl", "delete", "pod"],
-    );
-  });
-
-  // ── nested -c (wrapper inside -c string) ───────────────────────
-
-  it("su -c with wrapper inside the -c string", () => {
-    assert.deepStrictEqual(
-      unwrapCommand(["su", "-c", "sudo kubectl delete pod"]),
-      ["kubectl", "delete", "pod"],
-    );
-  });
-
-  // ── edge cases ─────────────────────────────────────────────────
-
-  it("empty tokens returns null", () => {
-    assert.strictEqual(unwrapCommand([]), null);
-  });
-
-  it("only wrapper, no command returns null", () => {
-    assert.strictEqual(unwrapCommand(["sudo"]), null);
-  });
-
-  it("only wrapper with flags, no command returns null", () => {
-    assert.strictEqual(unwrapCommand(["sudo", "-E", "-u", "root"]), null);
-  });
-
-  it("unknown first token is NOT stripped (treated as command)", () => {
-    assert.deepStrictEqual(
-      unwrapCommand(["unknown_wrapper", "kubectl", "delete"]),
-      ["unknown_wrapper", "kubectl", "delete"],
-    );
-  });
+  // ── custom wrappers ──────────────────────────────────────────
 
   it("custom wrappers map works", () => {
     const custom: Record<string, WrapperDef> = {
@@ -465,17 +236,9 @@ describe("unwrapCommand", () => {
   });
 
   it("custom wrappers map: unknown without the custom map", () => {
-    // mysudo is not in default WRAPPERS — treated as command
     assert.deepStrictEqual(
       unwrapCommand(["mysudo", "kubectl", "delete"]),
       ["mysudo", "kubectl", "delete"],
-    );
-  });
-
-  it("prlimit (passthrough with no valued flags)", () => {
-    assert.deepStrictEqual(
-      unwrapCommand(["prlimit", "kubectl", "delete", "pod"]),
-      ["kubectl", "delete", "pod"],
     );
   });
 });

@@ -109,6 +109,31 @@ pi-deny/
   AGENTS.md
 ```
 
+## Test conventions
+
+Tests use a data-driven `cases` format: define an array of `[input, expected]` tuples with group comments, then iterate to generate one `it()` per case.
+
+```ts
+describe("functionName", () => {
+  const cases: [InputType, ExpectedType][] = [
+    // ── group comment ────────────────────────────────────
+    [input1, expected1],
+    [input2, expected2],
+  ];
+
+  for (const [input, expected] of cases) {
+    it(`${JSON.stringify(input)} → ${JSON.stringify(expected)}`, () => {
+      assert.deepStrictEqual(functionName(input), expected);
+    });
+  }
+});
+```
+
+- Group related cases with `// ── group name ──` comment dividers (keep the dashes aligned).
+- For cases with different return types (e.g. `T | null`), use a union type and branch the assertion.
+- Prefer this format over individual `it()` calls. Use individual `it()` blocks only when test setup differs from the standard pattern (e.g. custom parameters, async setup).
+- This keeps tests compact while preserving one-failure-per-case granularity in the test runner.
+
 ## Architecture notes
 
 - `splitCommands` is a hand-rolled quote-aware shell tokenizer. It does NOT expand variables, execute subshells, or resolve globs — that's the shell's job. It only splits into segments for matching.
