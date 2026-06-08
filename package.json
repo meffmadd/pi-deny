@@ -1,28 +1,23 @@
 {
   "name": "pi-deny",
-  "version": "0.1.0",
-  "description": "Gitignore-like blocklist for pi's bash tool.",
+  "version": "0.2.0",
+  "description": "Gitignore-like shell command blocklist for CI, pre-commit hooks, and interactive use.",
   "type": "module",
-  "main": "./pi-deny/index.ts",
-  "files": [
-    "pi-deny/",
-    "AGENTS.md"
-  ],
+  "main": "./pi-deny/engine.ts",
+  "bin": {
+    "bash-deny": "./pi-deny/cli.ts"
+  },
+  "files": ["pi-deny/", "AGENTS.md"],
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
-    "test": "node --import tsx --test tests/*.test.ts tests/scenarios/*.test.ts"
+    "test": "node --import tsx --test tests/*.test.ts tests/scenarios/*.test.ts tests/cli/*.test.ts",
+    "bench": "node --import tsx scripts/bench.ts"
   },
-  "keywords": ["pi", "shell", "guard", "security", "bash"],
+  "keywords": ["shell", "guard", "security", "bash", "cli"],
   "license": "MIT",
-  "pi": {
-    "extensions": ["./pi-deny/index.ts"]
-  },
-  "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.76.0",
-    "@earendil-works/pi-ai": "^0.76.0",
-    "@earendil-works/pi-tui": "^0.76.0"
-  },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.76.0",
     "tsx": "^4.0.0"
   }
 }

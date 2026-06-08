@@ -2,8 +2,6 @@
  * pi-deny — Shell command parsing and pattern matching engine
  */
 
-import { execSync } from "node:child_process";
-
 // ── Types ──────────────────────────────────────────────────────────
 
 export type Pattern = { allow: boolean; tokens: string[]; raw: string };
@@ -122,30 +120,6 @@ export function splitCommands(input: string): string[][] {
 
   cut();
   return out;
-}
-
-// ── Command resolution ────────────────────────────────────────────
-
-const resolutionCache = new Map<string, string>();
-
-/**
- * Resolve a command name to its on-disk path via `which`.
- * Skips names already containing `/` (paths). Caches results.
- * Falls back to the original name if resolution fails.
- */
-export function resolveCommand(name: string): string {
-  if (name.includes("/")) return name;
-  const cached = resolutionCache.get(name);
-  if (cached !== undefined) return cached;
-  try {
-    const result = execSync(`which "${name}"`, { encoding: "utf-8", timeout: 1000 }).trim();
-    const out = result || name;
-    resolutionCache.set(name, out);
-    return out;
-  } catch {
-    resolutionCache.set(name, name);
-    return name;
-  }
 }
 
 // ── Pattern matching ───────────────────────────────────────────────
@@ -342,16 +316,11 @@ export function checkCommand(
   patterns: Pattern[],
   wrappers?: Record<string, WrapperDef>,
 ): string[] | undefined {
-  const resolvedPatterns = patterns.map(p => ({
-    ...p,
-    tokens: [resolveCommand(p.tokens[0]), ...p.tokens.slice(1)],
-  }));
   for (const tokens of splitCommands(input)) {
     if (tokens.length === 0) continue;
     const unwrapped = unwrapCommand(tokens, wrappers);
     if (unwrapped === null) return tokens; // invalid wrapper usage → deny
-    const resolved = [resolveCommand(unwrapped[0]), ...unwrapped.slice(1)];
-    if (evaluate(resolved, resolvedPatterns) === "deny") return tokens;
+    if (evaluate(unwrapped, patterns) === "deny") return tokens;
   }
   return undefined;
 }
@@ -365,16 +334,11 @@ export function checkCommandDetailed(
   patterns: Pattern[],
   wrappers?: Record<string, WrapperDef>,
 ): { tokens: string[]; rule: string } | undefined {
-  const resolvedPatterns = patterns.map(p => ({
-    ...p,
-    tokens: [resolveCommand(p.tokens[0]), ...p.tokens.slice(1)],
-  }));
   for (const tokens of splitCommands(input)) {
     if (tokens.length === 0) continue;
     const unwrapped = unwrapCommand(tokens, wrappers);
     if (unwrapped === null) return { tokens, rule: "(invalid wrapper usage)" };
-    const resolved = [resolveCommand(unwrapped[0]), ...unwrapped.slice(1)];
-    const match = findMatch(resolved, resolvedPatterns);
+    const match = findMatch(unwrapped, patterns);
     if (match && !match.allow) {
       return { tokens, rule: match.raw };
     }
