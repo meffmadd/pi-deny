@@ -1,4 +1,4 @@
-# pi-deny
+# bash-deny
 
 CLI shell command guard. Blocks dangerous bash commands with `.gitignore`-like syntax. Zero runtime dependencies.
 

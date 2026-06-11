@@ -1,5 +1,5 @@
 /**
- * Red-team tests for pi-deny engine.
+ * Red-team tests for bash-deny engine.
  *
  * Every entry in `attempts` is a command that a rule SHOULD block.
  * The test runner shows the natural red/green split:
@@ -19,7 +19,7 @@ import {
   parseFile,
   checkCommand,
   splitCommands,
-} from "../../pi-deny/engine";
+} from "../../bash-deny/engine";
 
 // ── Load test rules ────────────────────────────────────────────────
 

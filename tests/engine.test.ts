@@ -17,7 +17,7 @@ import {
   unwrapCommand,
   WRAPPERS,
   type WrapperDef,
-} from "../pi-deny/engine";
+} from "../bash-deny/engine";
 
 // ═══════════════════════════════════════════════════════════════════
 // splitCommands

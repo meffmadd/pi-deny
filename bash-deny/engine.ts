@@ -1,5 +1,5 @@
 /**
- * pi-deny — Shell command parsing and pattern matching engine
+ * bash-deny — Shell command parsing and pattern matching engine
  */
 
 // ── Types ──────────────────────────────────────────────────────────

@@ -1,13 +1,13 @@
 {
-  "name": "pi-deny",
+  "name": "bash-deny",
   "version": "0.2.0",
   "description": "Gitignore-like shell command blocklist for CI, pre-commit hooks, and interactive use.",
   "type": "module",
-  "main": "./pi-deny/engine.ts",
+  "main": "./bash-deny/engine.ts",
   "bin": {
-    "bash-deny": "./pi-deny/cli.ts"
+    "bash-deny": "./bash-deny/cli.ts"
   },
-  "files": ["pi-deny/", "AGENTS.md"],
+  "files": ["bash-deny/", "AGENTS.md"],
   "engines": {
     "node": ">=20"
   },

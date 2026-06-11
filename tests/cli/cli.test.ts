@@ -11,7 +11,7 @@ import { writeFileSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-const CLI = "node --import tsx pi-deny/cli.ts";
+const CLI = "node --import tsx bash-deny/cli.ts";
 
 function run(args: string, stdin?: string) {
   return spawnSync(CLI + " " + args, {

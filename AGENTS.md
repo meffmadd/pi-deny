@@ -1,4 +1,4 @@
-# pi-deny
+# bash-deny
 
 CLI shell command guard. Blocks dangerous bash commands using token-level deny patterns with `!` allow-exceptions — like `.gitignore` for your shell. Zero runtime dependencies.
 
@@ -6,8 +6,8 @@ CLI shell command guard. Blocks dangerous bash commands using token-level deny p
 
 | Layer | What |
 |-------|------|
-| `pi-deny/engine.ts` | Pure functions: `splitCommands`, `matchPattern`, `evaluate` — zero deps, fully tested |
-| `pi-deny/cli.ts` | CLI entry point — `bash-deny` command, `-f`/`-r` rule loading, stdin/`-i` input |
+| `bash-deny/engine.ts` | Pure functions: `splitCommands`, `matchPattern`, `evaluate` — zero deps, fully tested |
+| `bash-deny/cli.ts` | CLI entry point — `bash-deny` command, `-f`/`-r` rule loading, stdin/`-i` input |
 
 ## Rule format
 
@@ -102,7 +102,7 @@ bash-deny -f .pi/.bashdeny -q -i "kubectl get pods" && echo "allowed"
 npm install -g .
 
 # Or run directly with npx
-npx tsx pi-deny/cli.ts -f rules.txt -i "kubectl delete pod"
+npx tsx bash-deny/cli.ts -f rules.txt -i "kubectl delete pod"
 ```
 
 Requires Node.js >= 20 (for `util.parseArgs`).
@@ -125,8 +125,8 @@ npx bumpp -y             # skip confirmation
 ## Structure
 
 ```
-pi-deny/
-  pi-deny/
+bash-deny/
+  bash-deny/
     engine.ts            # splitCommands, matchPattern, evaluate, parseFile, unwrapCommand
     cli.ts               # CLI entry point (bash-deny)
   tests/
