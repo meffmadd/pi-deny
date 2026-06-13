@@ -7,17 +7,31 @@
   "bin": {
     "bash-deny": "./bash-deny/cli.ts"
   },
-  "files": ["bash-deny/", "AGENTS.md"],
+  "files": [
+    "bash-deny/",
+    "AGENTS.md"
+  ],
   "engines": {
     "node": ">=20"
   },
   "scripts": {
+    "lint": "eslint bash-deny tests scripts",
     "test": "node --import tsx --test tests/*.test.ts tests/scenarios/*.test.ts tests/cli/*.test.ts",
     "bench": "node --import tsx scripts/bench.ts"
   },
-  "keywords": ["shell", "guard", "security", "bash", "cli"],
+  "keywords": [
+    "shell",
+    "guard",
+    "security",
+    "bash",
+    "cli"
+  ],
   "license": "MIT",
   "devDependencies": {
-    "tsx": "^4.0.0"
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.4.1",
+    "tsx": "^4.0.0",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.61.0"
   }
 }

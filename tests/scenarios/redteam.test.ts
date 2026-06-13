@@ -140,8 +140,8 @@ describe("red team: vulnerabilities", () => {
                 `Shell output mismatch!`
               );
               lines.push(`  Exploitable: produces identical shell output (sha ${aHash}).`);
-            } catch (err: any) {
-              lines.push(`  Shell exec failed: ${err.message}.`);
+            } catch (err: unknown) {
+              lines.push(`  Shell exec failed: ${(err as Error).message}.`);
             }
           }
 

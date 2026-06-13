@@ -15,7 +15,6 @@ import {
   checkCommand,
   checkCommandDetailed,
   unwrapCommand,
-  WRAPPERS,
   type WrapperDef,
 } from "../bash-deny/engine";
 

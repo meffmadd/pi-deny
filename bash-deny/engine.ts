@@ -74,7 +74,7 @@ export function splitCommands(input: string): string[][] {
   let tok = "";
   let sq = false; // inside 'single' quotes
   let dq = false; // inside "double" quotes
-  let esc = false;
+  let esc = false; // backslash escape (next char is literal)
 
   const flush = () => { if (tok) { seg.push(tok); tok = ""; } };
   const cut = () => { flush(); if (seg.length) out.push(seg); seg = []; };
