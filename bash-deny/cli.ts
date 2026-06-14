@@ -13,6 +13,7 @@ import { parseArgs } from "node:util";
 import { type Pattern, parseFile, parseLine, checkCommandDetailed } from "./engine";
 import { readFileSync, existsSync } from "node:fs";
 import { createInterface } from "node:readline";
+import { fileURLToPath } from "node:url";
 
 // ── Version ──────────────────────────────────────────────────────
 const VERSION = "0.2.0";
@@ -42,57 +43,74 @@ If both -i and stdin are provided, -i wins.
 
 // ── Rule loading ─────────────────────────────────────────────────
 
-function loadRules(filePath?: string, inlineRules?: string): Pattern[] {
+export type LoadResult =
+  | { ok: true; patterns: ReadonlyArray<Pattern> }
+  | { ok: false; error: string };
+
+/** Parse file content and/or inline rules into a Pattern list. */
+export function loadRulesPure(
+  fileContent: string | undefined,
+  inlineRules: string | undefined,
+): LoadResult {
   const patterns: Pattern[] = [];
-
-  // -f: read and parse file
-  if (filePath) {
-    if (!existsSync(filePath)) {
-      console.error(`bash-deny: error: file not found: ${filePath}`);
-      process.exit(1);
-    }
-    let content: string;
-    try {
-      content = readFileSync(filePath, "utf-8");
-    } catch {
-      console.error(`bash-deny: error: could not read file: ${filePath}`);
-      process.exit(1);
-    }
-    patterns.push(...parseFile(content));
+  if (fileContent !== undefined) {
+    for (const p of parseFile(fileContent)) patterns.push(p);
   }
-
-  // -r: split on ;, trim, filter empty, parse each segment
-  if (inlineRules) {
+  if (inlineRules !== undefined) {
     for (const segment of inlineRules.split(";")) {
       const trimmed = segment.trim();
       if (trimmed === "" || trimmed.startsWith("#")) continue;
       patterns.push(parseLine(trimmed));
     }
   }
+  return { ok: true, patterns };
+}
 
-  return patterns;
+/** Read a rule file (if given) and return the merged pattern list. */
+function loadRules(
+  filePath: string | undefined,
+  inlineRules: string | undefined,
+): LoadResult {
+  let fileContent: string | undefined;
+  if (filePath) {
+    if (!existsSync(filePath)) {
+      return { ok: false, error: `file not found: ${filePath}` };
+    }
+    try {
+      fileContent = readFileSync(filePath, "utf-8");
+    } catch {
+      return { ok: false, error: `could not read file: ${filePath}` };
+    }
+  }
+  return loadRulesPure(fileContent, inlineRules);
 }
 
 // ── Check one command ────────────────────────────────────────────
 
-function checkOne(
-  cmd: string,
-  patterns: Pattern[],
-  dryRun: boolean,
-  quiet: boolean,
-): boolean {
+export type CommandVerdict =
+  | { kind: "allow" }
+  | { kind: "deny"; message: string };
+
+/** Classify a command as allowed or denied, with a human-readable deny message. */
+export function classify(cmd: string, patterns: ReadonlyArray<Pattern>): CommandVerdict {
   const match = checkCommandDetailed(cmd, patterns);
-  if (match) {
-    const msg = `bash-deny: blocked: "${match.tokens.join(" ")}" (rule: "${match.rule}")`;
-    if (quiet) return true; // quiet: no output, just indicate denied
-    if (dryRun) {
-      console.log(msg);
-    } else {
-      console.error(msg);
-    }
-    return true; // denied
+  if (!match) return { kind: "allow" };
+  return {
+    kind: "deny",
+    message: `bash-deny: blocked: "${match.tokens.join(" ")}" (rule: "${match.rule}")`,
+  };
+}
+
+/** Print a deny verdict (or nothing if quiet) and return whether it was denied. */
+function reportVerdict(v: CommandVerdict, dryRun: boolean, quiet: boolean): boolean {
+  if (v.kind === "allow") return false;
+  if (quiet) return true; // quiet: no output, just indicate denied
+  if (dryRun) {
+    console.log(v.message);
+  } else {
+    console.error(v.message);
   }
-  return false; // allowed
+  return true; // denied
 }
 
 // ── Main ─────────────────────────────────────────────────────────
@@ -151,7 +169,12 @@ function main(): void {
     process.exit(2);
   }
 
-  const patterns = loadRules(filePath, inlineRules);
+  const result = loadRules(filePath, inlineRules);
+  if (!result.ok) {
+    console.error(`bash-deny: error: ${result.error}`);
+    process.exit(1);
+  }
+  const patterns = result.patterns;
 
   // Command from -i takes priority over stdin
   if (inputCmd !== undefined) {
@@ -160,7 +183,8 @@ function main(): void {
       printUsage(process.stderr);
       process.exit(2);
     }
-    const denied = checkOne(inputCmd, patterns, dryRun, quiet);
+    const v = classify(inputCmd, patterns);
+    const denied = reportVerdict(v, dryRun, quiet);
     process.exit(denied && !dryRun ? 1 : 0);
   }
 
@@ -176,7 +200,8 @@ function main(): void {
   let denied = false;
   rl.on("line", (line: string) => {
     if (!denied) {
-      const result = checkOne(line, patterns, dryRun, quiet);
+      const v = classify(line, patterns);
+      const result = reportVerdict(v, dryRun, quiet);
       if (result && !dryRun) {
         denied = true;
         rl.close();
@@ -188,4 +213,8 @@ function main(): void {
   });
 }
 
-main();
+// Run main() only when this file is the entry point. Allows tests to import
+// loadRulesPure / classify without triggering main().
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  main();
+}

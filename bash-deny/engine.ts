@@ -4,7 +4,11 @@
 
 // ── Types ──────────────────────────────────────────────────────────
 
-export type Pattern = { allow: boolean; tokens: string[]; raw: string };
+export type Pattern = {
+  readonly allow: boolean;
+  readonly tokens: ReadonlyArray<string>;
+  readonly raw: string;
+};
 
 export type Verdict = "deny" | "pass";
 
@@ -22,7 +26,7 @@ export interface WrapperDef {
 
 /** Built-in wrapper commands. Passthrough wrappers are stripped with their flags;
  *  c-wrappers extract the -c argument and re-tokenize it. */
-export const WRAPPERS: Record<string, WrapperDef> = {
+export const WRAPPERS: Readonly<Record<string, WrapperDef>> = {
   // Passthrough: strip name + flags/args, whatever's left is the real command
   sudo:        { kind: "passthrough", valuedFlags: new Set(["-u", "-g", "--user", "--group", "-p", "--prompt", "-C", "--close-from", "-r", "--role", "-t", "--type", "-h", "--host", "-T", "--timeout"]) },
   watch:       { kind: "passthrough", valuedFlags: new Set(["-n", "--interval", "--title", "-x", "--exec"]) },
@@ -125,7 +129,7 @@ export function splitCommands(input: string): string[][] {
 // ── Pattern matching ───────────────────────────────────────────────
 
 /** Scan-forward token match. Skips interspersed tokens. Trailing tokens implicitly allowed. */
-export function matchPattern(tokens: string[], pat: string[]): boolean {
+export function matchPattern(tokens: ReadonlyArray<string>, pat: ReadonlyArray<string>): boolean {
   let ci = 0;
   for (const pt of pat) {
     while (ci < tokens.length && tokens[ci] !== pt) ci++;
@@ -166,8 +170,8 @@ function isEnvAssignment(tok: string): boolean {
  *   unwrapCommand(["su","-l"])                  → null (interactive)
  */
 export function unwrapCommand(
-  tokens: string[],
-  wrappers?: Record<string, WrapperDef>,
+  tokens: ReadonlyArray<string>,
+  wrappers?: Readonly<Record<string, WrapperDef>>,
 ): string[] | null {
   const wm = wrappers ?? WRAPPERS;
   let i = 0;
@@ -263,7 +267,7 @@ export function unwrapCommand(
  * Returns "deny" if the last matching rule is a deny,
  * "pass" if the last matching rule is an allow or no rule matched.
  */
-export function evaluate(tokens: string[], patterns: Pattern[]): Verdict {
+export function evaluate(tokens: ReadonlyArray<string>, patterns: ReadonlyArray<Pattern>): Verdict {
   let last: boolean | undefined;
   for (const p of patterns) {
     if (matchPattern(tokens, p.tokens)) last = p.allow;
@@ -301,7 +305,7 @@ export function parseFile(content: string): Pattern[] {
  * Merge multiple pattern lists. Later lists override earlier ones
  * (enables cascade: builtins < global < project).
  */
-export function mergePatterns(...lists: Pattern[][]): Pattern[] {
+export function mergePatterns(...lists: ReadonlyArray<ReadonlyArray<Pattern>>): Pattern[] {
   return lists.flat();
 }
 
@@ -313,8 +317,8 @@ export function mergePatterns(...lists: Pattern[][]): Pattern[] {
  */
 export function checkCommand(
   input: string,
-  patterns: Pattern[],
-  wrappers?: Record<string, WrapperDef>,
+  patterns: ReadonlyArray<Pattern>,
+  wrappers?: Readonly<Record<string, WrapperDef>>,
 ): string[] | undefined {
   for (const tokens of splitCommands(input)) {
     if (tokens.length === 0) continue;
@@ -331,8 +335,8 @@ export function checkCommand(
  */
 export function checkCommandDetailed(
   input: string,
-  patterns: Pattern[],
-  wrappers?: Record<string, WrapperDef>,
+  patterns: ReadonlyArray<Pattern>,
+  wrappers?: Readonly<Record<string, WrapperDef>>,
 ): { tokens: string[]; rule: string } | undefined {
   for (const tokens of splitCommands(input)) {
     if (tokens.length === 0) continue;
@@ -347,7 +351,7 @@ export function checkCommandDetailed(
 }
 
 /** Find the last matching pattern, or undefined if none match. */
-function findMatch(tokens: string[], patterns: Pattern[]): Pattern | undefined {
+function findMatch(tokens: ReadonlyArray<string>, patterns: ReadonlyArray<Pattern>): Pattern | undefined {
   let last: Pattern | undefined;
   for (const p of patterns) {
     if (matchPattern(tokens, p.tokens)) last = p;

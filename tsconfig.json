@@ -1,0 +1,16 @@
+{
+  "_comment": "Used by eslint (parserOptions.projectService) so functional/prefer-immutable-types can see types. Not used by tsc for build — the project relies on tsx for runtime and has no separate type-check step.",
+  "compilerOptions": {
+    "target": "es2022",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "noEmit": true,
+    "allowJs": true,
+    "noUnusedLocals": false
+  },
+  "include": ["bash-deny/**/*", "tests/**/*", "scripts/**/*"],
+  "exclude": ["node_modules", "dist"]
+}
