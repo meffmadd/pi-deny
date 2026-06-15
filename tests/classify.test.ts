@@ -11,6 +11,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { classify, type CommandVerdict } from "../bash-deny/cli";
 import { parseLine, parseFile } from "../bash-deny/engine";
+import { assertShSyntax } from "./utils";
 
 const isDeny  = (v: CommandVerdict): v is { kind: "deny"; message: string } => v.kind === "deny";
 
@@ -49,6 +50,7 @@ describe("classify — basic allow / deny", () => {
 
   for (const [cmd, expected] of cases) {
     it(`"${cmd}" → ${expected}`, () => {
+      assertShSyntax(cmd);
       const v = classify(cmd, rules);
       assert.strictEqual(v.kind, expected);
       if (expected === "deny" && isDeny(v)) {
@@ -78,6 +80,7 @@ describe("classify — ! allow-exceptions", () => {
 
   for (const [cmd, expected] of cases) {
     it(`"${cmd}" → ${expected}`, () => {
+      assertShSyntax(cmd);
       assert.strictEqual(classify(cmd, rules).kind, expected);
     });
   }
@@ -100,6 +103,7 @@ describe("classify — multi-segment", () => {
 
   for (const [cmd, expected] of cases) {
     it(`"${cmd}" → ${expected}`, () => {
+      assertShSyntax(cmd);
       assert.strictEqual(classify(cmd, rules).kind, expected);
     });
   }
@@ -113,21 +117,27 @@ describe("classify — deny message", () => {
   const rules = [parseLine("kubectl delete")];
 
   it("includes the matched token text and the rule text", () => {
-    const v = classify("kubectl delete pod", rules);
+    const cmd = "kubectl delete pod";
+    assertShSyntax(cmd);
+    const v = classify(cmd, rules);
     assert.ok(isDeny(v));
     assert.match(v.message, /bash-deny: blocked: "kubectl delete pod"/);
     assert.match(v.message, /\(rule: "kubectl delete"\)/);
   });
 
   it("for wrapped commands, mentions the original (wrapped) tokens", () => {
-    const v = classify("sudo kubectl delete pod", rules);
+    const cmd = "sudo kubectl delete pod";
+    assertShSyntax(cmd);
+    const v = classify(cmd, rules);
     assert.ok(isDeny(v));
     assert.match(v.message, /bash-deny: blocked: "sudo kubectl delete pod"/);
     assert.match(v.message, /\(rule: "kubectl delete"\)/);
   });
 
   it("for invalid wrapper usage, says so", () => {
-    const v = classify("su - root", rules);
+    const cmd = "su - root";
+    assertShSyntax(cmd);
+    const v = classify(cmd, rules);
     assert.ok(isDeny(v));
     assert.match(v.message, /\(rule: "\(invalid wrapper usage\)"\)/);
   });
@@ -139,13 +149,16 @@ describe("classify — deny message", () => {
 
 describe("classify — empty rule set", () => {
   it("everything is allowed", () => {
+    for (const cmd of ["kubectl delete pod", "rm -rf /"]) assertShSyntax(cmd);
     assert.strictEqual(classify("kubectl delete pod", []).kind, "allow");
     assert.strictEqual(classify("rm -rf /", []).kind, "allow");
   });
 
   it("uses default wrappers even with no rules", () => {
+    const cmd = "sudo rm -rf /";
+    assertShSyntax(cmd);
     // unwrapCommand still strips sudo, but with no rules nothing matches
-    assert.strictEqual(classify("sudo rm -rf /", []).kind, "allow");
+    assert.strictEqual(classify(cmd, []).kind, "allow");
   });
 });
 
@@ -172,6 +185,7 @@ rm -rf
 
   for (const [cmd, expected] of cases) {
     it(`"${cmd}" → ${expected}`, () => {
+      assertShSyntax(cmd);
       assert.strictEqual(classify(cmd, rules).kind, expected);
     });
   }

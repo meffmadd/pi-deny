@@ -20,6 +20,7 @@ import {
   checkCommand,
   splitCommands,
 } from "../../bash-deny/engine";
+import { assertShSyntax } from "../utils";
 
 // ── Load test rules ────────────────────────────────────────────────
 
@@ -121,6 +122,10 @@ describe("red team: vulnerabilities", () => {
     describe(`rule: ${suite.label}`, () => {
       for (const { technique, cmd } of suite.attempts) {
         it(`SHOULD BLOCK (${technique}): ${cmd}`, () => {
+          // Sanity gate: bash itself must accept the syntax.
+          // If it doesn't, the test command is malformed — not a parser bypass.
+          assertShSyntax(cmd);
+
           const result = checkCommand(cmd, rules);
           const tokens = splitCommands(cmd).map(t => `[${t.join(" ")}]`).join(" ");
 

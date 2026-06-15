@@ -1,0 +1,6 @@
+# Control-flow test rules — used by controlflow.test.ts
+# Goal: verify the parser walks into for/while/until/if/subshell/brace groups
+# and finds leaf simple_commands hidden inside them.
+
+rm
+kubectl
