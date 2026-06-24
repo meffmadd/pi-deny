@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env tsx
 /**
  * bash-deny — CLI shell command guard
  *
@@ -11,7 +11,7 @@
 
 import { parseArgs } from "node:util";
 import { type Pattern, parseFile, parseLine, checkCommandDetailed } from "./engine";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, realpathSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 
@@ -214,7 +214,9 @@ function main(): void {
 }
 
 // Run main() only when this file is the entry point. Allows tests to import
-// loadRulesPure / classify without triggering main().
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+// loadRulesPure / classify without triggering main(). Resolves symlinks so a
+// `npm link` global install (where argv[1] is the symlink) still runs.
+const _entry = process.argv[1] ? realpathSync(process.argv[1]) : "";
+if (_entry === fileURLToPath(import.meta.url)) {
   main();
 }
