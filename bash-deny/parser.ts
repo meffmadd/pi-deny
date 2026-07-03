@@ -15,12 +15,6 @@ export type ReservedWord =
  | "case"
  | "esac"
 
-const ReservedWords = new Set(["for", "while", "until", "do", "done", "in", "if", "then", "elif", "else", "fi", "case", "esac"])
-
-const EscapedChars = new Set(['`', '$', '"', '\\', '\n']);
-
-const Separators = new Set([" ", "\t", "\n", ";", "&", "|", "(", ")", ""]); // empty string is EOF
-
 export type Tok =
  // structural tokens
  | {kind: "semi"}
@@ -48,6 +42,25 @@ export class ParseError extends Error {
     this.pos = pos;
   }
 }
+
+export type Node =
+ | {kind: "simple", tokens: string[]}
+ | {kind: "pipeline", bang: boolean, commands: Node[]}
+ | {kind: "andor", left: Node, op: "&&" | "||", right: Node}
+ | {kind: "list", items: Node[]}
+ | {kind: "subshell", body: Node}
+ | {kind: "brace", body: Node}
+ | {kind: "for", var: string, words: string[], body: Node}
+ | {kind: "while", cond: Node, body: Node, until: boolean}
+ | {kind: "if", branches: {cond: Node, body: Node}[], else?: Node}
+ | {kind: "case", word: Node, branches: {pat: string[], body: Node}}
+
+
+const ReservedWords = new Set(["for", "while", "until", "do", "done", "in", "if", "then", "elif", "else", "fi", "case", "esac"])
+
+const EscapedChars = new Set(['`', '$', '"', '\\', '\n']);
+
+const Separators = new Set([" ", "\t", "\n", ";", "&", "|", "(", ")", ""]); // empty string is EOF
 
 class TokenizeState {
   sq: boolean = false;
