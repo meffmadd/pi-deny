@@ -16,7 +16,7 @@
   },
   "scripts": {
     "lint": "eslint bash-deny tests scripts",
-    "test": "node --import tsx --test tests/*.test.ts tests/scenarios/*.test.ts tests/cli/*.test.ts",
+    "test": "node --import tsx --test tests/*.test.ts tests/scenarios/*.test.ts tests/cli/*.test.ts tests/parser/*.test.ts",
     "bench": "node --import tsx scripts/bench.ts"
   },
   "keywords": [
