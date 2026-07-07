@@ -43,25 +43,6 @@ export class ParseError extends Error {
   }
 }
 
-export type Node =
- | {kind: "simple", tokens: string[]}
- | {kind: "pipeline", bang: boolean, commands: Node[]}
- | {kind: "andor", left: Node, op: "&&" | "||", right: Node}
- | {kind: "list", items: Node[]}
- | {kind: "subshell", body: Node}
- | {kind: "brace", body: Node}
- | {kind: "for", var: string, words: string[], body: Node}
- | {kind: "while", cond: Node, body: Node, until: boolean}
- | {kind: "if", branches: {cond: Node, body: Node}[], else?: Node}
- | {kind: "case", word: Node, branches: {pat: string[], body: Node}}
-
-
-const ReservedWords = new Set(["for", "while", "until", "do", "done", "in", "if", "then", "elif", "else", "fi", "case", "esac"])
-
-const EscapedChars = new Set(['`', '$', '"', '\\', '\n']);
-
-const Separators = new Set([" ", "\t", "\n", ";", "&", "|", "(", ")", ""]); // empty string is EOF
-
 class TokenizeState {
   sq: boolean = false;
   dq: boolean = false;
@@ -79,7 +60,7 @@ class TokenizeState {
   }
 
   public peek(): string {
-    if (this.i + 1 < this.input.length) {
+  if (this.i + 1 < this.input.length) {
       return this.input[this.i+1];
     } else {
       return ""
@@ -241,3 +222,95 @@ export function tokenize(_input: string): Tok[] {
   return state.output;
 }
 
+type TokKind =
+ | "semi"
+ | "dsemi"
+ | "nl"
+ | "op"
+ | "amp"
+ | "bang"
+ | "lparen"
+ | "rparen"
+ | "lbrace"
+ | "rbrace"
+ | "word"
+ | "assign"
+ | "kw"
+ | "eof"
+
+export type Node =
+ | {kind: "simple", tokens: string[]}
+ | {kind: "pipeline", bang: boolean, commands: Node[]}
+ | {kind: "andor", left: Node, op: "&&" | "||", right: Node}
+ | {kind: "list", items: Node[]}
+ | {kind: "subshell", body: Node}
+ | {kind: "brace", body: Node}
+ | {kind: "for", var: string, words: string[], body: Node}
+ | {kind: "while", cond: Node, body: Node, until: boolean}
+ | {kind: "if", branches: {cond: Node, body: Node}[], else?: Node}
+ | {kind: "case", word: Node, branches: {pat: string[], body: Node}[]}
+
+export class ParserState {
+  tokens: Tok[];
+  i: number = 0;
+
+  constructor(tokens: Tok[]) {
+    this.tokens = tokens;
+  }
+
+  public peek(): Tok {
+    if (this.i < this.tokens.length) {
+      return this.tokens[this.i];
+    } else {
+      return this.tokens[this.tokens.length - 1]; // EOF
+    }
+  }
+
+  public consume(): Tok {
+    const tok = this.peek();
+    if (tok.kind !== "eof") this.i++;
+    return tok;    
+  }
+
+  public expect(kind: TokKind, value?: ReservedWord | "&&" | "||" | "|") {
+    const tok = this.peek();
+    
+    if (tok.kind != kind) {
+      throw new ParseError(`Expected kind to be ${kind} but was ${tok.kind}`, this.i);
+    }
+
+    if (value && (tok.kind === "op" || tok.kind === "kw") && tok.value !== value) {
+      throw new ParseError(`Expected value to be ${value} but was ${tok.value}`, this.i);
+    }
+
+    return this.consume();
+  }
+}
+
+const ReservedWords = new Set(["for", "while", "until", "do", "done", "in", "if", "then", "elif", "else", "fi", "case", "esac"])
+
+const EscapedChars = new Set(['`', '$', '"', '\\', '\n']);
+
+const Separators = new Set([" ", "\t", "\n", ";", "&", "|", "(", ")", ""]); // empty string is EOF
+
+export function parseSimple(state: ParserState): {kind: "simple", tokens: string[]} {
+  const tokens: string[] = []
+  const StopTokens = new Set(["semi", "amp", "nl", "op", "lparen", "rparen", "lbrace", "rbrace", "dsemi", "bang", "eof"] as TokKind[]);
+  while (!StopTokens.has(state.peek().kind)) {
+    const tok = state.consume();
+    switch (tok.kind) {
+      case "assign":
+        tokens.push(`${tok.name}=${tok.value}`);
+        break;
+      case "kw":
+        tokens.push(tok.value);
+        break;
+      case "word":
+        tokens.push(tok.value);
+        break;
+      default:
+        throw new ParseError("should not happen", state.i);
+    }
+  }
+  return {kind: "simple", tokens};
+}
