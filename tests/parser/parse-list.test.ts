@@ -265,16 +265,4 @@ describe("parseList", () => {
     }
   });
 
-  // ── caller precondition caveat ─────────────────────────────────
-  // parseList assumes it is called at command-start. Calling it on a stream
-  // beginning with an opener it doesn't own (lparen/lbrace) yields an empty
-  // first item — that input belongs to parseSubshell/parseBrace, which
-  // consume the opener first. Recorded so the boundary is explicit.
-  it(`caller-precondition: starting on lparen yields an empty first item`, () => {
-    const node = parse("(a; )") as { kind: "list"; items: Node[] };
-    // first item is empty (parseSimple stopped at lparen); this is the caller's
-    // responsibility, not parseList's. parseSubshell will consume `(` first.
-    assert.equal(node.items.length, 1);
-    assert.deepStrictEqual(node.items[0], pipeline(false, [simple([])]));
-  });
 });

@@ -322,11 +322,11 @@ export function parsePipeline(state: ParserState): {kind: "pipeline", bang: bool
     state.consume();
   }
 
-  pipeline.commands.push(parseSimple(state));
+  pipeline.commands.push(parseCommand(state));
   let next = state.peek()
   while (next.kind === "op" && next.value === "|") {
     state.consume();
-    pipeline.commands.push(parseSimple(state));
+    pipeline.commands.push(parseCommand(state));
     next = state.peek();
   }
 
@@ -350,6 +350,8 @@ export function parseAndOr(state: ParserState): Node  {
 
 const kwClosers: Set<ReservedWord> = new Set(["done", "fi", "esac", "then", "else", "elif", "do", "in"]);
 
+const kwOpeners: Set<ReservedWord> = new Set(["for", "while", "until", "if", "case"]);
+
 function isCloser(tok: Tok): boolean {
   switch (tok.kind) {
     case "eof":
@@ -364,6 +366,10 @@ function isCloser(tok: Tok): boolean {
   return false;
 }
 
+function isOpener(tok: Tok): boolean {
+  return tok.kind === "kw" && kwOpeners.has(tok.value);
+}
+
 export function parseList(state: ParserState): Node {
   const items: Node[] = [parseAndOr(state)];
   let op = state.peek();
@@ -376,4 +382,65 @@ export function parseList(state: ParserState): Node {
 
   return {kind: "list", items};
 }
+
+export function parseSubshell(state: ParserState): {kind: "subshell", body: Node} {
+  state.expect("lparen");
+  const body = parseList(state);
+  state.expect("rparen");
+  return {kind: "subshell", body};
+}
+
+export function parseBrace(state: ParserState): {kind: "brace", body: Node} {
+  state.expect("lbrace");
+  const body = parseList(state);
+  state.expect("rbrace");
+  return {kind: "brace", body};
+}
+
+export function parseFor(state: ParserState): {kind: "for", var: string, words: string[], body: Node} {
+  state.expect("kw", "for");
+  const v = (state.expect("word") as {kind: "word", value: string}).value;
+  const words: string[] = [];
+  let word = state.peek();
+  if (word.kind === "kw" && word.value === "in") {
+    state.consume();
+    word = state.peek()
+    while (word.kind === "word") {
+      words.push(word.value);
+      state.consume();
+      word = state.peek();
+    }   
+  }
+  while (word.kind !== "eof" && !(word.kind === "kw" && word.value === "do")) {
+    state.consume();
+    word = state.peek();
+  }
+  state.expect("kw", "do");
+  const body = parseList(state);
+  state.expect("kw", "done");
+  return {kind: "for", var: v, words, body};
+}
+
+export function parseCommand(state: ParserState): Node {
+  const tok = state.peek();
+
+  if (tok.kind === "kw" && tok.value === "for") {
+    return parseFor(state);
+  }
+  if (isOpener(tok)) {
+    throw new ParseError("not yet", state.i);
+  }
+  if (tok.kind === "lparen") {
+    return parseSubshell(state);
+  }
+  if (tok.kind === "lbrace") {
+    return parseBrace(state);
+  }
+
+  // Default: a simple command. A non-opener kw here (e.g. `done`, `then`) is
+  // in argument position — parseSimple treats it as a word (decision #2).
+  return parseSimple(state);
+}
+
+
 
