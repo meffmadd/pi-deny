@@ -314,3 +314,66 @@ export function parseSimple(state: ParserState): {kind: "simple", tokens: string
   }
   return {kind: "simple", tokens};
 }
+
+export function parsePipeline(state: ParserState): {kind: "pipeline", bang: boolean, commands: Node[]} {
+  const pipeline = {kind: "pipeline" as "pipeline", bang: false, commands: [] as Node[]};
+  if (state.peek().kind === "bang") {
+    pipeline.bang = true;
+    state.consume();
+  }
+
+  pipeline.commands.push(parseSimple(state));
+  let next = state.peek()
+  while (next.kind === "op" && next.value === "|") {
+    state.consume();
+    pipeline.commands.push(parseSimple(state));
+    next = state.peek();
+  }
+
+  return pipeline;
+}
+
+export function parseAndOr(state: ParserState): Node  {
+  let left: Node = parsePipeline(state);
+  let op = state.peek();
+  let right: Node | undefined = undefined;
+  while (op.kind === "op" && (op.value === "&&" || op.value == "||")) {
+    state.consume(); // op
+    right = parsePipeline(state);
+    left = {kind: "andor", left, op: op.value, right}
+    op = state.peek();
+  }
+
+  return left;
+}
+
+
+const kwClosers: Set<ReservedWord> = new Set(["done", "fi", "esac", "then", "else", "elif", "do", "in"]);
+
+function isCloser(tok: Tok): boolean {
+  switch (tok.kind) {
+    case "eof":
+    case "rparen":
+    case "rbrace":
+    case "dsemi":
+      return true;
+    case "kw":
+      return kwClosers.has(tok.value);
+  }
+  
+  return false;
+}
+
+export function parseList(state: ParserState): Node {
+  const items: Node[] = [parseAndOr(state)];
+  let op = state.peek();
+  while (op.kind === "semi" || op.kind === "amp" || op.kind === "nl") {
+    state.consume();
+    if (isCloser(state.peek())) break;
+    items.push(parseAndOr(state));
+    op = state.peek();
+  }
+
+  return {kind: "list", items};
+}
+
