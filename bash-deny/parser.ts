@@ -272,17 +272,17 @@ export class ParserState {
     return tok;    
   }
 
-  public expect(kind: TokKind, value?: ReservedWord | "&&" | "||" | "|") {
+  public check(kind: TokKind, value?: ReservedWord | "&&" | "||" | "|"): boolean {
     const tok = this.peek();
-    
-    if (tok.kind != kind) {
-      throw new ParseError(`Expected kind to be ${kind} but was ${tok.kind}`, this.i);
-    }
+    if (tok.kind != kind) return false;
+    if (value && (tok.kind === "op" || tok.kind === "kw") && tok.value !== value) return false;
+    return true;
+  }
 
-    if (value && (tok.kind === "op" || tok.kind === "kw") && tok.value !== value) {
-      throw new ParseError(`Expected value to be ${value} but was ${tok.value}`, this.i);
+  public expect(kind: TokKind, value?: ReservedWord | "&&" | "||" | "|"): Tok {
+    if (!this.check(kind, value)) {
+      throw new ParseError(`assert failed for kind ${kind}`, this.i);
     }
-
     return this.consume();
   }
 }
@@ -404,7 +404,7 @@ export function parseFor(state: ParserState): {kind: "for", var: string, words: 
   let word = state.peek();
   if (word.kind === "kw" && word.value === "in") {
     state.consume();
-    word = state.peek()
+    word = state.peek();
     while (word.kind === "word") {
       words.push(word.value);
       state.consume();
@@ -421,24 +421,90 @@ export function parseFor(state: ParserState): {kind: "for", var: string, words: 
   return {kind: "for", var: v, words, body};
 }
 
-export function parseCommand(state: ParserState): Node {
-  const tok = state.peek();
-
-  if (tok.kind === "kw" && tok.value === "for") {
-    return parseFor(state);
+export function parseWhile(state: ParserState): {kind: "while", cond: Node, body: Node, until: boolean} {
+  const until = state.check("kw", "until");
+  if (until) {
+    state.consume();
+  } else {
+    state.expect("kw", "while");
   }
-  if (isOpener(tok)) {
+  const cond = parseList(state);
+  state.expect("kw", "do");
+  const body = parseList(state);
+  state.expect("kw", "done");
+  return {kind: "while", cond, body, until};
+}
+
+export function parseIf(state: ParserState): {kind: "if", branches: {cond: Node, body: Node}[], else?: Node} {
+  state.expect("kw", "if");
+  const branches: {cond: Node, body: Node}[] = [];
+
+  let cond = parseList(state);
+  state.expect("kw", "then");
+  let body = parseList(state);
+  branches.push({cond, body});
+
+  while (state.check("kw", "elif")) {
+    state.consume();
+    cond = parseList(state);
+    state.expect("kw", "then");
+    body = parseList(state);
+    branches.push({cond, body});
+  }
+
+  let _else: Node | undefined = undefined;
+  if (state.check("kw", "else")) {
+    state.consume();
+    _else = parseList(state);
+  }
+  state.expect("kw", "fi");
+  return {kind: "if", branches, else: _else};
+}
+
+function wordValue(tok: Tok): string {
+  return (tok as {kind: "word", value: string}).value;
+}
+
+function skipSeparators(state: ParserState): void {
+  while (state.peek().kind === "nl" || state.peek().kind === "semi") {
+    state.consume();
+  }
+}
+
+export function parseCase(state: ParserState): {kind: "case", word: Node, branches: {pat: string[], body: Node}[]} {
+  state.expect("kw", "case");
+  const word: Node = {kind: "simple", tokens: [wordValue(state.expect("word"))]};
+  state.expect("kw", "in");
+  const branches: {pat: string[], body: Node}[] = [];
+  do {
+    // Tolerate newlines/semicolons after `in`, between branches, before `esac`.
+    skipSeparators(state);
+    const pat: string[] = [wordValue(state.expect("word"))];
+    while (state.check("op", "|")) {
+      state.consume();
+      pat.push(wordValue(state.expect("word")));
+    }
+    state.expect("rparen");
+    const body = parseList(state);   // stops at `dsemi` (a closer)
+    state.expect("dsemi");            // `;;` terminator — mandatory per §3/§7
+    branches.push({pat, body});
+    skipSeparators(state);            // newline before `esac` or next pattern
+  } while (!state.check("kw", "esac"));
+  state.expect("kw", "esac");
+  return {kind: "case", word, branches};
+}
+
+export function parseCommand(state: ParserState): Node {
+  if (state.check("kw", "for")) return parseFor(state);
+  if (state.check("kw", "while") || state.check("kw", "until")) return parseWhile(state);
+  if (state.check("kw", "if")) return parseIf(state);
+  if (state.check("kw", "case")) return parseCase(state);
+  if (isOpener(state.peek())) {
     throw new ParseError("not yet", state.i);
   }
-  if (tok.kind === "lparen") {
-    return parseSubshell(state);
-  }
-  if (tok.kind === "lbrace") {
-    return parseBrace(state);
-  }
+  if (state.check("lparen")) return parseSubshell(state);
+  if (state.check("lbrace")) return parseBrace(state);
 
-  // Default: a simple command. A non-opener kw here (e.g. `done`, `then`) is
-  // in argument position — parseSimple treats it as a word (decision #2).
   return parseSimple(state);
 }
 
