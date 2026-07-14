@@ -508,5 +508,58 @@ export function parseCommand(state: ParserState): Node {
   return parseSimple(state);
 }
 
+export function* leaves(node: Node): Generator<string[]> {
+  switch (node.kind) {
+    case "simple":
+      yield node.tokens;
+      return;
+
+    case "pipeline":
+      for (const cmd of node.commands) yield* leaves(cmd);
+      return;
+
+    case "andor":
+      yield* leaves(node.left);
+      yield* leaves(node.right);
+      return;
+
+    case "list":
+      for (const item of node.items) yield* leaves(item);
+      return;
+
+    case "subshell":
+      yield* leaves(node.body);
+      return;
+
+    case "brace":
+      yield* leaves(node.body);
+      return;
+
+    case "for":
+      // `var` and `words` are data, not commands.
+      yield* leaves(node.body);
+      return;
+
+    case "while":
+      yield* leaves(node.cond);
+      yield* leaves(node.body);
+      return;
+
+    case "if":
+      for (const b of node.branches) {
+        yield* leaves(b.cond);
+        yield* leaves(b.body);
+      }
+      if (node.else) yield* leaves(node.else);
+      return;
+
+    case "case":
+      // `word` is the match subject (data); `branches[].pat` are patterns
+      // (data). Neither executes — only `branches[].body` runs.
+      for (const b of node.branches) yield* leaves(b.body);
+      return;
+  }
+}
+
 
 
