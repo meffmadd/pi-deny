@@ -91,6 +91,15 @@ const cases: [string, Node][] = [
   // ── parameter / variable expansion words ───────────────────────
   ["echo $x", simple(["echo", "$x"])],
   ["echo ${VAR:-x}", simple(["echo", "${VAR:-x}"])],
+  // ── opaque sub-constructs are one word (§4.1) ──
+  // $(...) command substitution — opaque
+  ["echo $(rm)", simple(["echo", "$(rm)"])],
+  // empty $() → one word
+  ["echo $()", simple(["echo", "$()"])],
+  // $'...' ANSI-C quoting — opaque
+  ["echo $'ls'", simple(["echo", "$'ls'"])],
+  // backticks without internal space — one word (opaque word content)
+  ["echo `rm`", simple(["echo", "`rm`"])],
 
   // ── comments: # at word boundary consumes rest of line ──────────
   // parseSimple stops before the comment; comment produces no token here.
@@ -140,16 +149,6 @@ const cases: [string, Node][] = [
 // and the fix becomes visible.
 
 const limitations: { input: string; expected: Node; note: string }[] = [
-  {
-    input: "echo $(rm)",
-    expected: simple(["echo", "$"]),
-    note: "$( opaque: tokenizer splits $(rm) → [$, (, rm, )]; parseSimple stops at lparen",
-  },
-  {
-    input: "echo $'ls'",
-    expected: simple(["echo", "$ls"]),
-    note: "$' ANSI-C quoting: tokenizer treats $' as $ + sq-open, yielding word $ls",
-  },
   {
     input: "echo `echo rm`",
     expected: simple(["echo", "`echo", "rm`"]),

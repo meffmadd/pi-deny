@@ -12,11 +12,10 @@ import {
   evaluate,
   parseLine,
   parseFile,
-  checkCommand,
-  checkCommandDetailed,
   unwrapCommand,
   type WrapperDef,
 } from "../bash-deny/engine";
+import { checkCommandDeep } from "../bash-deny/parser";
 
 // ═══════════════════════════════════════════════════════════════════
 // splitCommands
@@ -339,10 +338,10 @@ git push --force
 });
 
 // ═══════════════════════════════════════════════════════════════════
-// checkCommand (end-to-end convenience)
+// checkCommandDeep (end-to-end convenience)
 // ═══════════════════════════════════════════════════════════════════
 
-describe("checkCommand", () => {
+describe("checkCommandDeep", () => {
   const rules = [
     parseLine("kubectl delete"),
     parseLine("git push --force"),
@@ -403,34 +402,34 @@ describe("checkCommand", () => {
 
   for (const [input, expected] of cases) {
     it(`"${input}" → ${expected ? `deny "${expected}"` : "pass"}`, () => {
-      const result = checkCommand(input, rules);
+      const result = checkCommandDeep(input, rules);
       if (expected) {
         assert.ok(result, `expected deny but got pass`);
-        assert.strictEqual(result.join(" "), expected);
+        assert.strictEqual(result!.tokens.join(" "), expected);
       } else {
         assert.strictEqual(result, undefined);
       }
     });
   }
 
-  it("checkCommandDetailed with unwrapping", () => {
+  it("checkCommandDeep with unwrapping", () => {
     const rules = [parseLine("kubectl delete")];
 
     // Direct match
-    let result = checkCommandDetailed("kubectl delete pod", rules);
+    let result = checkCommandDeep("kubectl delete pod", rules);
     assert.ok(result);
-    assert.strictEqual(result.tokens.join(" "), "kubectl delete pod");
-    assert.strictEqual(result.rule, "kubectl delete");
+    assert.strictEqual(result!.tokens.join(" "), "kubectl delete pod");
+    assert.strictEqual(result!.rule, "kubectl delete");
 
     // Wrapped match
-    result = checkCommandDetailed("sudo kubectl delete pod", rules);
+    result = checkCommandDeep("sudo kubectl delete pod", rules);
     assert.ok(result);
-    assert.strictEqual(result.tokens.join(" "), "sudo kubectl delete pod");
-    assert.strictEqual(result.rule, "kubectl delete");
+    assert.strictEqual(result!.tokens.join(" "), "sudo kubectl delete pod");
+    assert.strictEqual(result!.rule, "kubectl delete");
 
     // Invalid wrapper (su without -c)
-    result = checkCommandDetailed("su - root", rules);
+    result = checkCommandDeep("su - root", rules);
     assert.ok(result);
-    assert.strictEqual(result.rule, "(invalid wrapper usage)");
+    assert.strictEqual(result!.rule, "(invalid wrapper usage)");
   });
 });

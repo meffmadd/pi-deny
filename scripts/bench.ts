@@ -6,7 +6,8 @@
  * Build compiled version first: npx esbuild bash-deny/cli.ts --bundle --platform=node --outfile=dist/cli.mjs
  */
 
-import { checkCommand, parseLine } from "../bash-deny/engine";
+import { parseLine } from "../bash-deny/engine";
+import { checkCommandDeep } from "../bash-deny/parser";
 import { spawnSync } from "node:child_process";
 import { writeFileSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -242,11 +243,11 @@ function engineBench(
   iterations: number,
 ) {
   // Warmup
-  for (const cmd of pool) checkCommand(cmd, patterns);
+  for (const cmd of pool) checkCommandDeep(cmd, patterns);
 
   const start = performance.now();
   for (let i = 0; i < iterations; i++) {
-    checkCommand(pool[i % pool.length], patterns);
+    checkCommandDeep(pool[i % pool.length], patterns);
   }
   const elapsedMs = performance.now() - start;
 

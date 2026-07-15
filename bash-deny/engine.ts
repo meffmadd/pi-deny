@@ -309,49 +309,8 @@ export function mergePatterns(...lists: ReadonlyArray<ReadonlyArray<Pattern>>): 
   return lists.flat();
 }
 
-// ── Command checking (convenience) ─────────────────────────────────
-
-/**
- * Check a raw command string against a list of patterns.
- * Returns the first denied segment token array, or undefined if all pass.
- */
-export function checkCommand(
-  input: string,
-  patterns: ReadonlyArray<Pattern>,
-  wrappers?: Readonly<Record<string, WrapperDef>>,
-): string[] | undefined {
-  for (const tokens of splitCommands(input)) {
-    if (tokens.length === 0) continue;
-    const unwrapped = unwrapCommand(tokens, wrappers);
-    if (unwrapped === null) return tokens; // invalid wrapper usage → deny
-    if (evaluate(unwrapped, patterns) === "deny") return tokens;
-  }
-  return undefined;
-}
-
-/**
- * Like checkCommand, but also returns the matching deny rule text.
- * Returns { tokens, rule } for the first denied segment, or undefined if all pass.
- */
-export function checkCommandDetailed(
-  input: string,
-  patterns: ReadonlyArray<Pattern>,
-  wrappers?: Readonly<Record<string, WrapperDef>>,
-): { tokens: string[]; rule: string } | undefined {
-  for (const tokens of splitCommands(input)) {
-    if (tokens.length === 0) continue;
-    const unwrapped = unwrapCommand(tokens, wrappers);
-    if (unwrapped === null) return { tokens, rule: "(invalid wrapper usage)" };
-    const match = findMatch(unwrapped, patterns);
-    if (match && !match.allow) {
-      return { tokens, rule: match.raw };
-    }
-  }
-  return undefined;
-}
-
 /** Find the last matching pattern, or undefined if none match. */
-function findMatch(tokens: ReadonlyArray<string>, patterns: ReadonlyArray<Pattern>): Pattern | undefined {
+export function findMatch(tokens: ReadonlyArray<string>, patterns: ReadonlyArray<Pattern>): Pattern | undefined {
   let last: Pattern | undefined;
   for (const p of patterns) {
     if (matchPattern(tokens, p.tokens)) last = p;

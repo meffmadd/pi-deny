@@ -1,44 +1,27 @@
 /**
- * Red-team tests for bash-deny — control-flow bypasses.
+ * Control-flow red-team tests for bash-deny.
  *
- * Every entry in `attempts` is a shell command that the current engine
- * should NOT block (because the dangerous command is hidden inside a
- * control-flow construct, an eval argument, a variable, or a quoted string).
- * The test runner shows the natural red/green split:
+ * These verify the parser (parser.ts) walks *into* control-flow constructs —
+ * for / while / until / if / case / subshell / brace group — and finds the
+ * leaf `simple_command`s hidden inside them, so deny rules get a chance to
+ * match. This is the §8.3 suite from parser.md.
  *
- *   green ✓ = caught by checkCommand (defense works)
- *   red   ✖ = bypassed (vulnerability — hidden command slipped through)
+ * Every attempt here has the dangerous command as an *actual leaf* (not quoted,
+ * not inside `eval`, not in a `$var`, not inside `$(...)`). Those other bypass
+ * techniques are opaque word content by design (parser.md §2) and are covered
+ * by `redteam.test.ts`. Here we only test that control flow is no longer a
+ * hiding place.
  *
- * Why these bypass the current engine:
- * The engine splits on metacharacters (`;`, `|`, `&&`, `||`, `&`) and then
- * does scan-forward pattern matching on each segment. The `;` accidentally
- * reveals the dangerous command in *most* control-flow cases (e.g. the
- * segment `do rm -rf $x` contains the token `rm`). The real bypasses are
- * the cases where the dangerous command is opaque to the tokenizer:
- *
- *   • quoted strings — `"rm"` is one token, not the command `rm`
- *   • eval — the engine doesn't re-parse eval's argument
- *   • variables — `$cmd` is one token, not expanded
- *   • command substitution — `$(echo rm)` is one token
- *   • awk / perl / find — sub-interpreters that take the dangerous name
- *     as a string argument
- *
- * Every attempt is also validated with `sh -n -c` to confirm bash itself
- * accepts the syntax. If bash rejects it, the test is a data error — not a
- * bypass.
- *
- * Usage: npm test
+ * Each attempt is validated with `sh -n -c` to confirm bash itself accepts the
+ * syntax — if bash rejects it, the test is a data error, not an engine bypass.
  */
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import {
-  parseFile,
-  checkCommand,
-  splitCommands,
-} from "../../bash-deny/engine";
+import { parseFile } from "../../bash-deny/engine";
+import { checkCommandDeep } from "../../bash-deny/parser";
 import { assertShSyntax } from "../utils";
 
 // ── Load test rules ────────────────────────────────────────────────
@@ -47,7 +30,7 @@ const rulesPath = join(import.meta.dirname, "controlflow.bashdeny");
 const rules = parseFile(readFileSync(rulesPath, "utf8"));
 
 // ═══════════════════════════════════════════════════════════════════
-// Rule suites — one per command being hidden. Every entry SHOULD be blocked.
+// Attempts — every one MUST be blocked by checkCommandDeep.
 // ═══════════════════════════════════════════════════════════════════
 
 interface Attempt {
@@ -55,125 +38,39 @@ interface Attempt {
   cmd: string;
 }
 
-interface RuleSuite {
-  label: string;        // human label for describe()
-  rule: string;         // the rule text we expect to match
-  canonical: string;    // the bare command (documentation only)
-  attempts: Attempt[];
-}
-
-const suites: RuleSuite[] = [
-  {
-    label: "rm",
-    rule: "rm",
-    canonical: "rm -rf /tmp",
-    attempts: [
-      // ── control flow + quoted string (engine sees one token) ──
-      { technique: "for + double-quoted rm",     cmd: "for x in 1; do echo \"rm -rf $x\"; done" },
-      { technique: "for + single-quoted rm",     cmd: "for x in 1; do echo 'rm -rf $x'; done" },
-      { technique: "if + double-quoted rm",      cmd: "if true; then echo \"rm -rf /\"; fi" },
-      { technique: "while + double-quoted rm",   cmd: "while read x; do echo \"rm -rf $x\"; done" },
-      { technique: "subshell + quoted rm",       cmd: "( echo \"rm -rf /\" )" },
-      { technique: "brace + quoted rm",          cmd: "{ echo \"rm -rf /\"; }" },
-      { technique: "case + quoted rm in body",   cmd: "case $x in *) echo \"rm -rf /\";; esac" },
-
-      // ── control flow + eval ────────────────────────────────
-      { technique: "for + eval (literal string)",cmd: "for x in 1; do eval \"rm -rf $x\"; done" },
-      { technique: "if + eval",                  cmd: "if true; then eval \"rm -rf /\"; fi" },
-      { technique: "while + eval",               cmd: "while read x; do eval \"rm -rf $x\"; done" },
-      { technique: "subshell + eval",            cmd: "( eval \"rm -rf /\" )" },
-      { technique: "case + eval in body",        cmd: "case $x in *) eval \"rm -rf /\";; esac" },
-
-      // ── control flow + variable command ────────────────────
-      { technique: "for + $cmd",                 cmd: "c=rm; for x in 1; do $c -rf $x; done" },
-      { technique: "if + $cmd",                  cmd: "c=rm; if true; then $c -rf /; fi" },
-      { technique: "while + $cmd",               cmd: "c=rm; while read x; do $c -rf $x; done" },
-      { technique: "subshell + $cmd",            cmd: "c=rm; ( $c -rf / )" },
-      { technique: "case + $cmd",                cmd: "c=rm; case $x in *) $c -rf /;; esac" },
-      { technique: "for + ${!indirect}",         cmd: "c=rm; for x in 1; do ${!c} -rf $x; done" },
-
-      // ── control flow + command substitution ────────────────
-      { technique: "for + $(echo rm)",           cmd: "for x in 1; do $(echo rm) -rf $x; done" },
-      { technique: "if + $(echo rm)",            cmd: "if true; then $(echo rm) -rf /; fi" },
-      { technique: "subshell + backticks",       cmd: "x=`echo rm`; ( $x -rf / )" },
-
-      // ── control flow + sub-interpreter (awk / perl / xargs) ─
-      { technique: "for + awk system()",         cmd: "for x in 1; do awk 'BEGIN { system(\"rm -rf /\") }'; done" },
-      { technique: "if + perl system()",         cmd: "if true; then perl -e 'system(\"rm -rf /\")'; fi" },
-      { technique: "for + xargs",                cmd: "for x in 1; do echo $(echo rm) | xargs -I {} {} -rf; done" },
-      { technique: "while + bash -c",            cmd: "while read x; do bash -c 'rm -rf $x'; done" },
-
-      // ── control flow + pipe to interpreter ────────────────
-      { technique: "for + bash -c",              cmd: "for x in 1; do bash -c 'rm -rf /'; done" },
-      { technique: "if + sh -c",                 cmd: "if true; then sh -c 'rm -rf /'; fi" },
-    ],
-  },
-  {
-    label: "kubectl",
-    rule: "kubectl",
-    canonical: "kubectl delete pod",
-    attempts: [
-      // ── control flow + quoted string ──────────────────────
-      { technique: "for + double-quoted kubectl",  cmd: "for x in a; do echo \"kubectl delete $x\"; done" },
-      { technique: "if + single-quoted kubectl",   cmd: "if true; then echo 'kubectl delete pod'; fi" },
-      { technique: "while + quoted kubectl",       cmd: "while read x; do echo \"kubectl delete $x\"; done" },
-      { technique: "subshell + quoted kubectl",   cmd: "( echo \"kubectl delete pod\" )" },
-      { technique: "case + quoted kubectl",       cmd: "case $x in *) echo \"kubectl delete pod\";; esac" },
-
-      // ── control flow + eval ────────────────────────────────
-      { technique: "for + eval",                  cmd: "for x in a; do eval \"kubectl delete $x\"; done" },
-      { technique: "if + eval",                   cmd: "if true; then eval \"kubectl delete pod\"; fi" },
-      { technique: "case + eval",                 cmd: "case $x in *) eval \"kubectl delete pod\";; esac" },
-
-      // ── control flow + variable command ────────────────────
-      { technique: "for + $cmd",                  cmd: "c=kubectl; for x in a; do $c delete $x; done" },
-      { technique: "if + $cmd",                   cmd: "c=kubectl; if true; then $c delete pod; fi" },
-      { technique: "subshell + $cmd",             cmd: "c=kubectl; ( $c delete pod )" },
-
-      // ── control flow + command substitution ────────────────
-      { technique: "for + $(echo kubectl)",       cmd: "for x in a; do $(echo kubectl) delete $x; done" },
-
-      // ── control flow + sub-interpreter ─────────────────────
-      { technique: "for + perl system()",         cmd: "for x in a; do perl -e 'system(\"kubectl delete pod\")'; done" },
-      { technique: "if + xargs",                  cmd: "if true; then echo $(echo kubectl) | xargs -I {} {} delete pod; fi" },
-
-      // ── control flow + pipe to interpreter ────────────────
-      { technique: "for + bash -c",               cmd: "for x in a; do bash -c 'kubectl delete pod'; done" },
-    ],
-  },
+const attempts: Attempt[] = [
+  { technique: "for loop",       cmd: "for x in a b; do rm -rf $x; done" },
+  { technique: "while loop",     cmd: "while read x; do rm -rf $x; done" },
+  { technique: "if branch",      cmd: "if true; then rm -rf /; fi" },
+  { technique: "subshell",       cmd: "( rm -rf / )" },
+  { technique: "brace group",    cmd: "{ rm -rf /; }" },
+  { technique: "nested",         cmd: "if true; then for x in 1 2; do rm -rf $x; done; fi" },
+  { technique: "elif",           cmd: "if false; then echo no; elif true; then rm -rf /; fi" },
+  { technique: "backgrounded",   cmd: "rm -rf / &" },
+  { technique: "negated pipe",   cmd: "! rm -rf /" },
+  { technique: "case branch",    cmd: "case $x in *) rm -rf /;; esac" },
+  { technique: "case multi",     cmd: "case $x in a) echo a;; b) kubectl delete pod;; esac" },
 ];
 
 // ═══════════════════════════════════════════════════════════════════
-// Tests — one loop per rule suite. Every attempt asserts SHOULD be blocked.
+// Tests
 // ═══════════════════════════════════════════════════════════════════
 
-describe("red team: control flow bypasses", () => {
-  for (const suite of suites) {
-    describe(`rule: ${suite.label}`, () => {
-      for (const { technique, cmd } of suite.attempts) {
-        it(`SHOULD BLOCK (${technique}): ${cmd.replace(/\n/g, "\\n")}`, () => {
-          // Sanity gate: bash itself must accept the syntax.
-          // If it doesn't, the test command is malformed — not an engine bypass.
-          assertShSyntax(cmd);
+describe("control flow: parser walks into compound commands", () => {
+  for (const { technique, cmd } of attempts) {
+    it(`SHOULD BLOCK (${technique}): ${cmd.replace(/\n/g, "\\n")}`, () => {
+      // Sanity gate: bash itself must accept the syntax.
+      assertShSyntax(cmd);
 
-          // The actual check
-          const result = checkCommand(cmd, rules);
-          const tokens = splitCommands(cmd).map(t => `[${t.join(" ")}]`).join(" ");
+      // Deep check: parses the input and walks every leaf.
+      const result = checkCommandDeep(cmd, rules);
 
-          // Build vulnerability report (only shown when red ✖)
-          const lines: string[] = [
-            `BYPASS CONFIRMED: "${cmd.replace(/\n/g, "\\n")}" slips past the rule!`,
-            `  The dangerous command is hidden inside a control-flow / string / variable / eval.`,
-            `  Tokens as seen by splitCommands: ${tokens}`,
-          ];
-
-          assert.notStrictEqual(
-            result,
-            undefined,
-            lines.join("\n")
-          );
-        });
-      }
+      assert.notStrictEqual(
+        result,
+        undefined,
+        `BYPASS CONFIRMED: "${cmd.replace(/\n/g, "\\n")}" slips past the rules!\n` +
+        `  The dangerous leaf is hidden inside a control-flow construct.`,
+      );
     });
   }
 });

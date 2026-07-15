@@ -2,7 +2,7 @@
  * Tests for the pure `classify` helper.
  *
  * Pass cmd + patterns in, assert CommandVerdict out. Mirrors the deny/allow
- * matrix from checkCommandDetailed without going through the CLI.
+ * matrix from checkCommandDeep without going through the CLI.
  *
  * Usage: npm test
  */

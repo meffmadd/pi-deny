@@ -10,7 +10,8 @@
  */
 
 import { parseArgs } from "node:util";
-import { type Pattern, parseFile, parseLine, checkCommandDetailed } from "./engine";
+import { type Pattern, parseFile, parseLine } from "./engine";
+import { checkCommandDeep } from "./parser";
 import { readFileSync, existsSync, realpathSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
@@ -93,7 +94,7 @@ export type CommandVerdict =
 
 /** Classify a command as allowed or denied, with a human-readable deny message. */
 export function classify(cmd: string, patterns: ReadonlyArray<Pattern>): CommandVerdict {
-  const match = checkCommandDetailed(cmd, patterns);
+  const match = checkCommandDeep(cmd, patterns);
   if (!match) return { kind: "allow" };
   return {
     kind: "deny",

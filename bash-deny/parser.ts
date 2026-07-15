@@ -1,3 +1,5 @@
+import { findMatch, splitCommands, unwrapCommand, type Pattern, type WrapperDef } from "./engine";
+
 export type ReservedWord =
  // loops
  | "for"
@@ -203,6 +205,63 @@ export function tokenize(_input: string): Tok[] {
             state.tok += b;
           }
           break;
+        case "$":
+          if (state.peek() === "(") {
+            // $(...) — opaque command substitution
+            state.quoted = true;
+            state.tok += "$(";
+            state.i += 2;
+            let depth = 1, sq = false, dq = false, esc = false;
+            while (!state.done() && depth > 0) {
+              const c = state.input[state.i];
+              if (esc) { state.tok += c; esc = false; }
+              else if (sq) { if (c === "'") sq = false; state.tok += c; }
+              else if (dq) { if (c === '"') dq = false; else if (c === "\\") esc = true; state.tok += c; }
+              else if (c === "(") { depth++; state.tok += c; }
+              else if (c === ")") { depth--; state.tok += c; if (depth === 0) break; }
+              else if (c === "'") { sq = true; state.tok += c; }
+              else if (c === '"') { dq = true; state.tok += c; }
+              else if (c === "\\") { esc = true; state.tok += c; }
+              else state.tok += c;
+              state.i++;
+            }
+          } else if (state.peek() === "{") {
+            // ${...} — opaque parameter expansion
+            state.quoted = true;
+            state.tok += "${";
+            state.i += 2;
+            let depth = 1, sq = false, dq = false, esc = false;
+            while (!state.done() && depth > 0) {
+              const c = state.input[state.i];
+              if (esc) { state.tok += c; esc = false; }
+              else if (sq) { if (c === "'") sq = false; state.tok += c; }
+              else if (dq) { if (c === '"') dq = false; else if (c === "\\") esc = true; state.tok += c; }
+              else if (c === "{") { depth++; state.tok += c; }
+              else if (c === "}") { depth--; state.tok += c; if (depth === 0) break; }
+              else if (c === "'") { sq = true; state.tok += c; }
+              else if (c === '"') { dq = true; state.tok += c; }
+              else if (c === "\\") { esc = true; state.tok += c; }
+              else state.tok += c;
+              state.i++;
+            }
+          } else if (state.peek() === "'") {
+            // $'...' — ANSI-C quoting, opaque
+            state.quoted = true;
+            state.tok += "$'";
+            state.i += 2;
+            let esc = false;
+            while (!state.done()) {
+              const c = state.input[state.i];
+              if (esc) { state.tok += c; esc = false; }
+              else if (c === "\\") { state.tok += c; esc = true; }
+              else if (c === "'") { state.tok += c; break; }
+              else state.tok += c;
+              state.i++;
+            }
+          } else {
+            state.tok += b;
+          }
+          break;
         default:
           state.tok += b;
       }
@@ -383,21 +442,21 @@ export function parseList(state: ParserState): Node {
   return {kind: "list", items};
 }
 
-export function parseSubshell(state: ParserState): {kind: "subshell", body: Node} {
+function parseSubshell(state: ParserState): {kind: "subshell", body: Node} {
   state.expect("lparen");
   const body = parseList(state);
   state.expect("rparen");
   return {kind: "subshell", body};
 }
 
-export function parseBrace(state: ParserState): {kind: "brace", body: Node} {
+function parseBrace(state: ParserState): {kind: "brace", body: Node} {
   state.expect("lbrace");
   const body = parseList(state);
   state.expect("rbrace");
   return {kind: "brace", body};
 }
 
-export function parseFor(state: ParserState): {kind: "for", var: string, words: string[], body: Node} {
+function parseFor(state: ParserState): {kind: "for", var: string, words: string[], body: Node} {
   state.expect("kw", "for");
   const v = (state.expect("word") as {kind: "word", value: string}).value;
   const words: string[] = [];
@@ -421,7 +480,7 @@ export function parseFor(state: ParserState): {kind: "for", var: string, words: 
   return {kind: "for", var: v, words, body};
 }
 
-export function parseWhile(state: ParserState): {kind: "while", cond: Node, body: Node, until: boolean} {
+function parseWhile(state: ParserState): {kind: "while", cond: Node, body: Node, until: boolean} {
   const until = state.check("kw", "until");
   if (until) {
     state.consume();
@@ -435,7 +494,7 @@ export function parseWhile(state: ParserState): {kind: "while", cond: Node, body
   return {kind: "while", cond, body, until};
 }
 
-export function parseIf(state: ParserState): {kind: "if", branches: {cond: Node, body: Node}[], else?: Node} {
+function parseIf(state: ParserState): {kind: "if", branches: {cond: Node, body: Node}[], else?: Node} {
   state.expect("kw", "if");
   const branches: {cond: Node, body: Node}[] = [];
 
@@ -471,7 +530,7 @@ function skipSeparators(state: ParserState): void {
   }
 }
 
-export function parseCase(state: ParserState): {kind: "case", word: Node, branches: {pat: string[], body: Node}[]} {
+function parseCase(state: ParserState): {kind: "case", word: Node, branches: {pat: string[], body: Node}[]} {
   state.expect("kw", "case");
   const word: Node = {kind: "simple", tokens: [wordValue(state.expect("word"))]};
   state.expect("kw", "in");
@@ -559,6 +618,77 @@ export function* leaves(node: Node): Generator<string[]> {
       for (const b of node.branches) yield* leaves(b.body);
       return;
   }
+}
+
+/** Top-level entry: tokenize input and parse it as a list. */
+function parse(input: string): Node {
+  const tokens = tokenize(input);
+  const state = new ParserState(tokens);
+  return parseList(state);
+}
+
+/**
+ * Deep command check: parse the input into an AST and walk every leaf
+ * `simple_command`, checking each against the patterns. Returns the first
+ * denied leaf's tokens and the matching deny rule, or undefined if all pass.
+ *
+ * Uses the parser's `leaves()` walker instead of `splitCommands`, so commands
+ * hidden inside control-flow constructs (for/while/if/case/subshell/brace) are
+ * found.
+ *
+ * For input the parser can't fully consume — out-of-scope constructs like
+ * function definitions and arithmetic (parser.md §2), or malformed input — it
+ * falls back to the `splitCommands`-based shallow check, so behavior is never
+ * worse than the pre-parser engine. The fallback only triggers when the parser
+ * throws or leaves leftover tokens; fully-parsed input uses the AST (which is
+ * more precise, e.g. it doesn't treat `for x in rm` loop values as commands).
+ */
+export function checkCommandDeep(
+  input: string,
+  patterns: ReadonlyArray<Pattern>,
+  wrappers?: Readonly<Record<string, WrapperDef>>,
+): { tokens: string[]; rule: string } | undefined {
+  // Deep path: parse and walk AST leaves (catches control-flow hidden commands).
+  try {
+    const state = new ParserState(tokenize(input));
+    const ast = parseList(state);
+    if (state.peek().kind === "eof") {
+      for (const leaf of leaves(ast)) {
+        if (leaf.length === 0) continue;
+        const unwrapped = unwrapCommand(leaf, wrappers);
+        if (unwrapped === null) return { tokens: leaf, rule: "(invalid wrapper usage)" };
+        const match = findMatch(unwrapped, patterns);
+        if (match && !match.allow) return { tokens: leaf, rule: match.raw };
+      }
+      return undefined;
+    }
+    // Leftover tokens: an out-of-scope construct the parser doesn't handle.
+    // Fall through to the shallow path.
+  } catch (e) {
+    if (!(e instanceof ParseError)) throw e;
+    // Malformed input (e.g. unclosed construct). Fall through to the shallow path.
+  }
+  return checkCommandShallow(input, patterns, wrappers);
+}
+
+/**
+ * Shallow `splitCommands`-based check — the fallback for input the parser can't
+ * fully handle. Splits on metacharacters and checks each segment. This is the
+ * pre-parser engine path, kept as a safety net so no input regresses.
+ */
+function checkCommandShallow(
+  input: string,
+  patterns: ReadonlyArray<Pattern>,
+  wrappers?: Readonly<Record<string, WrapperDef>>,
+): { tokens: string[]; rule: string } | undefined {
+  for (const tokens of splitCommands(input)) {
+    if (tokens.length === 0) continue;
+    const unwrapped = unwrapCommand(tokens, wrappers);
+    if (unwrapped === null) return { tokens, rule: "(invalid wrapper usage)" };
+    const match = findMatch(unwrapped, patterns);
+    if (match && !match.allow) return { tokens, rule: match.raw };
+  }
+  return undefined;
 }
 
 
