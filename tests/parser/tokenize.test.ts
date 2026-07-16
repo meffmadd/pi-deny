@@ -168,8 +168,18 @@ const cases: { input: string; expected: Tok[] }[] = [
   { input: "echo $(rm)", expected: [{ kind: "word", value: "echo" }, { kind: "word", value: "$(rm)" }, { kind: "eof" }] },
   // empty $() → one word
   { input: "echo $()", expected: [{ kind: "word", value: "echo" }, { kind: "word", value: "$()" }, { kind: "eof" }] },
-  // $'...' ANSI-C quoting — opaque word content
-  { input: "echo $'ls'", expected: [{ kind: "word", value: "echo" }, { kind: "word", value: "$'ls'" }, { kind: "eof" }] },
+  // $'...' ANSI-C quoting — escapes evaluated (so $'ls' ≡ ls)
+  { input: "echo $'ls'", expected: [{ kind: "word", value: "echo" }, { kind: "word", value: "ls" }, { kind: "eof" }] },
+  // $'\154\163' — octal escapes → "ls"
+  { input: "echo $'\\154\\163'", expected: [{ kind: "word", value: "echo" }, { kind: "word", value: "ls" }, { kind: "eof" }] },
+  // $'\x6c\x73' — hex escapes → "ls"
+  { input: "echo $'\\x6c\\x73'", expected: [{ kind: "word", value: "echo" }, { kind: "word", value: "ls" }, { kind: "eof" }] },
+  // l$'\163' — concatenation → "ls"
+  { input: "l$'\\163'", expected: [{ kind: "word", value: "ls" }, { kind: "eof" }] },
+  // $'\t' — control escape → tab
+  { input: "a $'\\t'", expected: [{ kind: "word", value: "a" }, { kind: "word", value: "\t" }, { kind: "eof" }] },
+  // $'' — empty → empty word
+  { input: "echo $''", expected: [{ kind: "word", value: "echo" }, { kind: "word", value: "" }, { kind: "eof" }] },
 ];
 
 // ═══════════════════════════════════════════════════════════════════

@@ -96,8 +96,8 @@ const cases: [string, Node][] = [
   ["echo $(rm)", simple(["echo", "$(rm)"])],
   // empty $() → one word
   ["echo $()", simple(["echo", "$()"])],
-  // $'...' ANSI-C quoting — opaque
-  ["echo $'ls'", simple(["echo", "$'ls'"])],
+  // $'...' ANSI-C quoting — escapes evaluated (so $'ls' ≡ ls)
+  ["echo $'ls'", simple(["echo", "ls"])],
   // backticks without internal space — one word (opaque word content)
   ["echo `rm`", simple(["echo", "`rm`"])],
 

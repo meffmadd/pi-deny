@@ -45,6 +45,73 @@ export class ParseError extends Error {
   }
 }
 
+/**
+ * Evaluate a single ANSI-C escape sequence. `input[bi]` is the backslash;
+ * `input[bi+1]` is the escape character. Returns the decoded string and the
+ * number of source characters consumed (including the backslash).
+ *
+ *   \n → "\n" (consumed 2)   \154 → "l" (consumed 4)   \x6c → "l" (consumed 4)
+ *
+ * Unknown escapes preserve the backslash + char (bash's behavior).
+ */
+function evalAnsiCEscape(input: string, bi: number): { value: string; consumed: number } {
+  const e = input[bi + 1];
+  switch (e) {
+    case "a": return { value: "\x07", consumed: 2 };
+    case "b": return { value: "\b", consumed: 2 };
+    case "e": case "E": return { value: "\x1b", consumed: 2 };
+    case "f": return { value: "\f", consumed: 2 };
+    case "n": return { value: "\n", consumed: 2 };
+    case "r": return { value: "\r", consumed: 2 };
+    case "t": return { value: "\t", consumed: 2 };
+    case "v": return { value: "\v", consumed: 2 };
+    case "\\": return { value: "\\", consumed: 2 };
+    case "'": return { value: "'", consumed: 2 };
+    case '"': return { value: '"', consumed: 2 };
+    case "?": return { value: "?", consumed: 2 };
+    case "0": case "1": case "2": case "3": case "4": case "5": case "6": case "7": {
+      // \nnn — 1 to 3 octal digits
+      let oct = "";
+      let k = 0;
+      while (k < 3 && /[0-7]/.test(input[bi + 1 + k] ?? "")) { oct += input[bi + 1 + k]; k++; }
+      return { value: String.fromCodePoint(parseInt(oct, 8) & 0xff), consumed: 1 + k };
+    }
+    case "x": {
+      // \xHH — 1 to 2 hex digits (at least one required)
+      let hex = "";
+      let k = 0;
+      while (k < 2 && /[0-9a-fA-F]/.test(input[bi + 2 + k] ?? "")) { hex += input[bi + 2 + k]; k++; }
+      if (hex) return { value: String.fromCodePoint(parseInt(hex, 16) & 0xff), consumed: 2 + k };
+      return { value: "\\x", consumed: 2 };
+    }
+    case "u": {
+      // \uHHHH — 1 to 4 hex digits
+      let hex = "";
+      let k = 0;
+      while (k < 4 && /[0-9a-fA-F]/.test(input[bi + 2 + k] ?? "")) { hex += input[bi + 2 + k]; k++; }
+      if (hex) return { value: String.fromCodePoint(parseInt(hex, 16)), consumed: 2 + k };
+      return { value: "\\u", consumed: 2 };
+    }
+    case "U": {
+      // \UHHHHHHHH — 1 to 8 hex digits
+      let hex = "";
+      let k = 0;
+      while (k < 8 && /[0-9a-fA-F]/.test(input[bi + 2 + k] ?? "")) { hex += input[bi + 2 + k]; k++; }
+      if (hex) return { value: String.fromCodePoint(parseInt(hex, 16)), consumed: 2 + k };
+      return { value: "\\U", consumed: 2 };
+    }
+    case "c": {
+      // \cX — control character (X & 0x1f)
+      const ctrl = input[bi + 2];
+      if (ctrl === undefined) return { value: "\\c", consumed: 2 };
+      return { value: String.fromCodePoint(ctrl.toUpperCase().charCodeAt(0) & 0x1f), consumed: 3 };
+    }
+    default:
+      // unknown escape — bash preserves the backslash + char
+      return { value: "\\" + e, consumed: 2 };
+  }
+}
+
 class TokenizeState {
   sq: boolean = false;
   dq: boolean = false;
@@ -245,18 +312,19 @@ export function tokenize(_input: string): Tok[] {
               state.i++;
             }
           } else if (state.peek() === "'") {
-            // $'...' — ANSI-C quoting, opaque
+            // $'...' — ANSI-C quoting. Evaluate backslash escapes and append
+            // the decoded characters (not the raw source), so $'ls' tokenizes
+            // identically to ls and deny rules match both forms.
             state.quoted = true;
-            state.tok += "$'";
-            state.i += 2;
-            let esc = false;
+            state.i += 2; // skip $'
             while (!state.done()) {
               const c = state.input[state.i];
-              if (esc) { state.tok += c; esc = false; }
-              else if (c === "\\") { state.tok += c; esc = true; }
-              else if (c === "'") { state.tok += c; break; }
-              else state.tok += c;
-              state.i++;
+              if (c === "'") { break; } // closing quote
+              if (c !== "\\") { state.tok += c; state.i++; continue; }
+              if (state.i + 1 >= state.input.length) { break; } // trailing backslash
+              const esc = evalAnsiCEscape(state.input, state.i);
+              state.tok += esc.value;
+              state.i += esc.consumed;
             }
           } else {
             state.tok += b;
