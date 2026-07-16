@@ -178,6 +178,23 @@ describe("unwrapCommand", () => {
     [["dash", "-c", "kubectl delete pod"], ["kubectl", "delete", "pod"]],
 
     // ═══════════════════════════════════════════════════════════
+    // eval (concat-wrapper: join args with spaces, re-tokenize)
+    // ═══════════════════════════════════════════════════════════
+
+    [["eval", "rm", "-rf", "/"], ["rm", "-rf", "/"]],
+    [["eval", "rm -rf /"], ["rm", "-rf", "/"]],
+    [["eval", "echo", "danger", "hello"], ["echo", "danger", "hello"]],
+    [["eval", "echo danger hello"], ["echo", "danger", "hello"]],
+    // eval with no payload → nothing to run
+    [["eval"], null],
+    // eval chained under a passthrough wrapper
+    [["sudo", "eval", "rm", "-rf", "/"], ["rm", "-rf", "/"]],
+    // eval nested inside a -c wrapper (re-tokenized recursively)
+    [["bash", "-c", "eval rm -rf /"], ["rm", "-rf", "/"]],
+    // eval with multiple quoted args gets concatenated then re-split
+    [["eval", "echo", "rm -rf", "/"], ["echo", "rm", "-rf", "/"]],
+
+    // ═══════════════════════════════════════════════════════════
     // chained wrappers
     // ═══════════════════════════════════════════════════════════
 

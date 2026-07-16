@@ -28,6 +28,11 @@ Options:
   -f, --file <path>    Load rules from a .bashdeny file
   -r, --rules <rules>  Inline rules (;-separated, same format as file lines)
   -i, --input <cmd>    The command string to check
+  -s, --strict         Block evasion constructs ($(), \`\`, \${}, {a,b}, <()>),
+                      path-based commands (/bin/ls, ./rm, ../rm), match
+                      case-insensitively, and rescan wrapper payloads
+                      (bash -c, su -c, eval). Works with no rules — blocks
+                      suspicious constructs as-is.
   -n, --dry-run        Print what would be blocked but always exit 0
   -q, --quiet          No output — exit code only (1 if denied, 0 if allowed)
   -h, --help           Print usage and exit
@@ -93,8 +98,8 @@ export type CommandVerdict =
   | { kind: "deny"; message: string };
 
 /** Classify a command as allowed or denied, with a human-readable deny message. */
-export function classify(cmd: string, patterns: ReadonlyArray<Pattern>): CommandVerdict {
-  const match = checkCommandDeep(cmd, patterns);
+export function classify(cmd: string, patterns: ReadonlyArray<Pattern>, strict = false): CommandVerdict {
+  const match = checkCommandDeep(cmd, patterns, undefined, { strict });
   if (!match) return { kind: "allow" };
   return {
     kind: "deny",
@@ -125,6 +130,7 @@ function main(): void {
         file:     { type: "string", short: "f" },
         rules:    { type: "string", short: "r" },
         input:    { type: "string", short: "i" },
+        strict:   { type: "boolean", short: "s" },
         "dry-run": { type: "boolean", short: "n" },
         quiet:    { type: "boolean", short: "q" },
         help:     { type: "boolean", short: "h" },
@@ -160,12 +166,14 @@ function main(): void {
   const filePath = values.file as string | undefined;
   const inlineRules = values.rules as string | undefined;
   const inputCmd = values.input as string | undefined;
+  const strict = (values.strict as boolean) ?? false;
   const dryRun = (values["dry-run"] as boolean) ?? false;
   const quiet = (values.quiet as boolean) ?? false;
 
-  // Must have rules
-  if (!filePath && !inlineRules) {
-    console.error("bash-deny: error: no rules provided (use -f or -r)");
+  // Must have rules, unless --strict is set (strict blocks evasion constructs on
+  // its own, with no rules needed).
+  if (!filePath && !inlineRules && !strict) {
+    console.error("bash-deny: error: no rules provided (use -f, -r, or -s)");
     printUsage(process.stderr);
     process.exit(2);
   }
@@ -184,7 +192,7 @@ function main(): void {
       printUsage(process.stderr);
       process.exit(2);
     }
-    const v = classify(inputCmd, patterns);
+    const v = classify(inputCmd, patterns, strict);
     const denied = reportVerdict(v, dryRun, quiet);
     process.exit(denied && !dryRun ? 1 : 0);
   }
@@ -201,7 +209,7 @@ function main(): void {
   let denied = false;
   rl.on("line", (line: string) => {
     if (!denied) {
-      const v = classify(line, patterns);
+      const v = classify(line, patterns, strict);
       const result = reportVerdict(v, dryRun, quiet);
       if (result && !dryRun) {
         denied = true;

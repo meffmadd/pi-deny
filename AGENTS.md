@@ -6,8 +6,9 @@ CLI shell command guard. Blocks dangerous bash commands using token-level deny p
 
 | Layer | What |
 |-------|------|
-| `bash-deny/engine.ts` | Pure functions: `splitCommands`, `matchPattern`, `evaluate` — zero deps, fully tested |
-| `bash-deny/cli.ts` | CLI entry point — `bash-deny` command, `-f`/`-r` rule loading, stdin/`-i` input |
+| `bash-deny/engine.ts` | Pure functions: `splitCommands`, `matchPattern`, `evaluate`, `parseFile`, `unwrapCommand` (passthrough/c-wrapper/concat) — zero deps, fully tested |
+| `bash-deny/strict.ts` | Strict-mode construct detection (`$()`, backticks, `${}`, `{,}`, process sub `<()>`, path-based commands, case folding) — zero deps |
+| `bash-deny/cli.ts` | CLI entry point — `bash-deny` command, `-f`/`-r` rule loading, stdin/`-i` input, `-s` strict mode |
 
 ## Rule format
 
@@ -49,7 +50,41 @@ echo "safe && stuff" && kubectl delete pod
               ↑ literal        ↑ separator → second segment checked
 ```
 
-**Wrapper awareness** — detects `sudo`, `su -c`, `bash -c`, `env`, `nohup`, `nice`, `chroot`, `flock`, and others, and checks the command underneath.
+**Wrapper awareness** — detects `sudo`, `su -c`, `bash -c`, `eval`, `env`, `nohup`, `nice`, `chroot`, `flock`, and others, and checks the command underneath. `eval` is a concat-wrapper: its args are joined and re-tokenized, mirroring how `eval` re-parses them.
+
+**Strict mode** (`-s`) — closes every known red-team evasion that the token matcher can't see. The matcher is intentionally literal: it never expands variables, runs subshells, resolves globs, or looks up command paths. `-s` layers detection for those opaque constructs on top, so you get safe-by-default blocking without writing a rule for every technique:
+
+```
+Command:   echo $(rm -rf /)        →  DENIED  (command substitution)
+           echo `rm -rf /`        →  DENIED  (backtick substitution)
+           ${XX}ls /tmp            →  DENIED  (parameter expansion)
+           {ls,/tmp}               →  DENIED  (brace expansion)
+           cat <(rm -rf /)        →  DENIED  (process substitution)
+           eval 'rm -rf /'        →  DENIED  (eval payload unwrapped → rule match)
+           bash -c 'echo $(rm)'   →  DENIED  (construct rescanned after wrapper re-parse)
+           /bin/ls /tmp            →  DENIED  (path-based command, vs rule `ls`)
+           ./ls /tmp               →  DENIED  (relative path, vs rule `ls`)
+           ../ls /tmp              →  DENIED  (parent-relative path)
+           LS /tmp                  →  DENIED  (case-insensitive match vs rule `ls`)
+           echo 'safe $(rm)'        →  PASS    (construct inside single quotes is literal)
+           echo hi # $(rm)          →  PASS    (construct inside a # comment is not run)
+           echo $((1+1))            →  PASS    (pure arithmetic can't run commands)
+           echo "hello world"        →  PASS    (no construct)
+```
+
+Strict checks run on every command segment (after `&&`/`||`/`|`/`;` splitting) and on the unwrapped command under wrappers (`sudo`, `bash -c`, `eval`, …). Strict verdicts compose with rule verdicts: any deny wins.
+
+Strict mode is quote-aware — constructs inside single quotes are treated as literal text and not flagged, matching how the shell would evaluate them. It is also comment-aware: an unquoted `#` at a word boundary starts a comment, and the rest of the line is not scanned (bash never runs it). A mid-word `#` (e.g. `a#$(rm)`) is literal, so a construct glued after it is still caught.
+
+Arithmetic `$((...))` is **not** blocked on its own: it can't run commands (only the `$(...)` inside it can, and that is still caught as command substitution). So `echo $((1+1))` passes while `echo $(( $(rm) ))` is denied.
+
+ANSI-C quoting (`$'...'`) is **not** a strict-mode block: the parser's tokenizer decodes it into plain characters, so `$'ls'` and `$'\154\163'` tokenize identically to `ls` and are caught by ordinary rule matching — no strict escalation needed.
+
+`eval` is a concat-wrapper (like `bash -c`): its arguments are joined and re-tokenized, so `eval 'rm -rf /'` is checked as `rm -rf /` and caught by an `rm` rule. In strict mode, every source string a wrapper re-parses (the `-c` argument of `bash`/`su`/`sh`, or `eval`'s joined args) is rescanned for evasion constructs — a `$(rm)` hidden inside the quoted payload of `bash -c 'echo $(rm)'` is flagged even when the outer single quotes made it literal to the first scan.
+
+**Deliberate strict-mode tradeoffs** (not blocked, by design):
+- `exec 'rm -rf /'` — `exec` with a single quoted argument is **not** a real bypass: the shell treats the whole string as a literal filename to exec, so `rm` never runs (verified). `exec rm -rf /` (unquoted) is caught normally by scan-forward matching.
+- A plain `$VAR` used as the command word (e.g. `cmd=rm; $cmd /tmp`) is not flagged. It's indistinguishable from legitimate `$EDITOR file` / `$SHELL script` patterns, and requires the variable to be assigned elsewhere first. `${cmd}` as the command word *is* blocked (parameter expansion is opaque).
 
 ## CLI usage
 
@@ -60,6 +95,7 @@ Options:
   -f, --file <path>    Load rules from a .bashdeny file
   -r, --rules <rules>  Inline rules (;-separated, same format as file lines)
   -i, --input <cmd>    The command string to check
+  -s, --strict        Strict mode — block opaque shell constructs ($(), `${}`, backticks, brace expansion, path-based commands) and match case-insensitively
   -n, --dry-run        Print what would be blocked but always exit 0
   -q, --quiet          No output — exit code only (1 if denied, 0 if allowed)
   -h, --help           Print usage and exit
@@ -70,6 +106,7 @@ Options:
 - Piped stdin reads one command per line (first deny stops processing).
 - If both `-i` and stdin are provided, `-i` wins.
 - `-n` and `-q` are mutually exclusive.
+- `-s` (strict) works with or without rules; works with `-n` and `-q`.
 - Exit codes: 0 = allowed (or dry-run), 1 = denied/blocked, 2 = usage error.
 
 ### Examples
@@ -93,6 +130,10 @@ bash-deny -f .pi/.bashdeny -n -i "kubectl delete pod"
 
 # Quiet (exit code only)
 bash-deny -f .pi/.bashdeny -q -i "kubectl get pods" && echo "allowed"
+
+# Strict mode (blocks $(), backticks, ${}, brace expansion, path-based commands)
+bash-deny -s -i "echo $(rm -rf /)"
+bash-deny -s -f .pi/.bashdeny -i "kubectl delete pod"
 ```
 
 ## Install
@@ -128,14 +169,18 @@ npx bumpp -y             # skip confirmation
 bash-deny/
   bash-deny/
     engine.ts            # splitCommands, matchPattern, evaluate, parseFile, unwrapCommand
+    strict.ts             # strict-mode construct detection (detectStrict, strictVerdict)
     cli.ts               # CLI entry point (bash-deny)
   tests/
     engine.test.ts       # core engine tests
+    strict.test.ts        # strict-mode detection tests
     cli/
-      cli.test.ts        # CLI tests (arg parsing, stdin, exit codes)
+      cli.test.ts        # CLI tests (arg parsing, stdin, exit codes, --strict)
     scenarios/
       redteam.bashdeny   # red team rule set
-      redteam.test.ts    # red team evasion tests
+      redteam.test.ts    # red team evasion tests (plain + strict mode)
+      controlflow.bashdeny
+      controlflow.test.ts
   .pi/
     .bashdeny            # example rule file
   package.json
@@ -174,4 +219,4 @@ describe("functionName", () => {
 - `matchPattern` uses scan-forward: each pattern token advances through the command tokens, skipping non-matching ones. This naturally handles `sudo`, `-C`, and other interspersed flags.
 - The engine is fully independent — you could use it in any Node.js project.
 - No runtime dependencies. Only `tsx` for running tests and development.
-- The engine does NOT resolve command names to paths (no `which`). Rules match token-for-token against what the user types. A rule for `ls` matches `ls /tmp` but not `/bin/ls /tmp`. This is correct for a CLI: users write rules against the command text they type.
+- The engine does NOT resolve command names to paths (no `which`). Rules match token-for-token against what the user types. A rule for `ls` matches `ls /tmp` but not `/bin/ls /tmp`. This is correct for a CLI: users write rules against the command text they type. Strict mode (`-s`) closes this gap: it flags any command word containing a `/` (absolute `/bin/ls`, relative `./rm`, `../rm`) so path-based invocations are blocked even without an explicit rule.

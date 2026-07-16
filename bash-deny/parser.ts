@@ -1,4 +1,5 @@
 import { findMatch, splitCommands, unwrapCommand, type Pattern, type WrapperDef } from "./engine";
+import { detectStrictConstruct, isPathCommand, type CheckOptions, type StrictViolation } from "./strict";
 
 export type ReservedWord =
  // loops
@@ -715,7 +716,24 @@ export function checkCommandDeep(
   input: string,
   patterns: ReadonlyArray<Pattern>,
   wrappers?: Readonly<Record<string, WrapperDef>>,
+  options?: CheckOptions,
 ): { tokens: string[]; rule: string } | undefined {
+  const strict = options?.strict ?? false;
+
+  // Strict construct detection runs on the raw input before parsing — it catches
+  // opaque/obfuscation constructs ($(...), `${...}`, backticks, $'...', brace
+  // expansion) that the token-level matcher can't see into, no matter where they
+  // appear in the command.
+  if (strict) {
+    const v = detectStrictConstruct(input);
+    if (v) return { tokens: [input], rule: `(strict: ${v.construct})` };
+  }
+
+  // Strict mode also rescans every source string a wrapper re-parses (the -c
+  // argument of bash/su/sh, or eval's joined args). A construct hidden inside
+  // single quotes in the original input is literal to the outer scan above, but
+  // becomes active once the wrapper re-parses it — so rescan it there.
+
   // Deep path: parse and walk AST leaves (catches control-flow hidden commands).
   try {
     const state = new ParserState(tokenize(input));
@@ -723,9 +741,16 @@ export function checkCommandDeep(
     if (state.peek().kind === "eof") {
       for (const leaf of leaves(ast)) {
         if (leaf.length === 0) continue;
-        const unwrapped = unwrapCommand(leaf, wrappers);
+        const h = strict ? reparseHandler() : undefined;
+        const unwrapped = unwrapCommand(leaf, wrappers, h?.onReparse);
+        if (h && h.violation()) {
+          return { tokens: leaf, rule: `(strict: ${h.violation()!.construct})` };
+        }
         if (unwrapped === null) return { tokens: leaf, rule: "(invalid wrapper usage)" };
-        const match = findMatch(unwrapped, patterns);
+        if (strict && isPathCommand(unwrapped)) {
+          return { tokens: leaf, rule: "(strict: path-based command)" };
+        }
+        const match = findMatch(unwrapped, patterns, strict);
         if (match && !match.allow) return { tokens: leaf, rule: match.raw };
       }
       return undefined;
@@ -736,7 +761,7 @@ export function checkCommandDeep(
     if (!(e instanceof ParseError)) throw e;
     // Malformed input (e.g. unclosed construct). Fall through to the shallow path.
   }
-  return checkCommandShallow(input, patterns, wrappers);
+  return checkCommandShallow(input, patterns, wrappers, options);
 }
 
 /**
@@ -744,16 +769,38 @@ export function checkCommandDeep(
  * fully handle. Splits on metacharacters and checks each segment. This is the
  * pre-parser engine path, kept as a safety net so no input regresses.
  */
+/** Build a callback for `unwrapCommand` that runs strict construct detection on
+ *  every source string a wrapper re-parses, stashing the first violation found. */
+function reparseHandler(): {
+  onReparse: (source: string) => void;
+  violation: () => StrictViolation | null;
+} {
+  let v: StrictViolation | null = null;
+  return {
+    onReparse: (source: string) => { if (!v) v = detectStrictConstruct(source); },
+    violation: () => v,
+  };
+}
+
 function checkCommandShallow(
   input: string,
   patterns: ReadonlyArray<Pattern>,
   wrappers?: Readonly<Record<string, WrapperDef>>,
+  options?: CheckOptions,
 ): { tokens: string[]; rule: string } | undefined {
+  const strict = options?.strict ?? false;
   for (const tokens of splitCommands(input)) {
     if (tokens.length === 0) continue;
-    const unwrapped = unwrapCommand(tokens, wrappers);
+    const h = strict ? reparseHandler() : undefined;
+    const unwrapped = unwrapCommand(tokens, wrappers, h?.onReparse);
+    if (h && h.violation()) {
+      return { tokens, rule: `(strict: ${h.violation()!.construct})` };
+    }
     if (unwrapped === null) return { tokens, rule: "(invalid wrapper usage)" };
-    const match = findMatch(unwrapped, patterns);
+    if (strict && isPathCommand(unwrapped)) {
+      return { tokens, rule: "(strict: path-based command)" };
+    }
+    const match = findMatch(unwrapped, patterns, strict);
     if (match && !match.allow) return { tokens, rule: match.raw };
   }
   return undefined;

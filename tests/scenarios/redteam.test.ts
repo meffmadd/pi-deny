@@ -78,6 +78,8 @@ const suites: RuleSuite[] = [
       { technique: "ANSI-C quoting (octal)",       cmd: `$'\\154\\163' /tmp` },
       { technique: "ANSI-C quoting (hex)",         cmd: `$'\\x6c\\x73' /tmp` },
       { technique: "full path",                    cmd: "/bin/ls /tmp", limitation: "no path resolution (AGENTS.md)" },
+      { technique: "relative path ./",             cmd: "./ls /tmp", limitation: "relative path bypasses PATH lookup" },
+      { technique: "parent relative path ../",      cmd: "../ls /tmp", limitation: "relative path bypasses PATH lookup" },
       { technique: "$( ) substitution",            cmd: "$(echo ls) /tmp" , limitation: "cmd substitution is opaque (§2)" },
       { technique: "$( ) glued",                   cmd: "$(echo '')ls /tmp" , limitation: "cmd substitution is opaque (§2)" },
       { technique: "` ` substitution",             cmd: "`echo ls` /tmp", limitation: "backtick substitution is opaque (§2)" },
@@ -103,13 +105,16 @@ const suites: RuleSuite[] = [
       // Adversarial
       { technique: "ANSI-C quoting",              cmd: "$'echo' danger hello" },
       { technique: "full path",                    cmd: "/bin/echo danger hello", limitation: "no path resolution (AGENTS.md)" },
+      { technique: "relative path ./",             cmd: "./echo danger hello", limitation: "relative path bypasses PATH lookup" },
       { technique: "$( ) substitution",            cmd: "$(echo echo) danger hello" , limitation: "cmd substitution is opaque (§2)" },
       { technique: "$( ) glued",                   cmd: "$(echo '')echo danger hello" , limitation: "cmd substitution is opaque (§2)" },
       { technique: "` ` substitution",             cmd: "`echo echo` danger hello", limitation: "backtick substitution is opaque (§2)" },
       { technique: "brace expansion",              cmd: "{echo,danger,hello}", limitation: "brace expansion out of scope (§2)" },
       { technique: "${UNSET} expansion",           cmd: "${XX}echo danger hello" , limitation: "parameter expansion is opaque (§2)" },
       { technique: "${VAR-} expansion",            cmd: "${X-}echo danger hello" , limitation: "parameter expansion is opaque (§2)" },
+      { technique: "process substitution",          cmd: "cat <(echo danger hello)", limitation: "process substitution is opaque (§2)" },
       { technique: "inline ANSI-C",                cmd: `ec$'\\150'o danger hello` },
+      { technique: "eval quoted",                   cmd: "eval 'echo danger hello'" },
       { technique: "uppercase",                    cmd: "ECHO danger hello", limitation: "case-sensitive matching (no case normalization)" },
     ],
   },
@@ -164,6 +169,51 @@ describe("red team: vulnerabilities", () => {
           );
         });
       }
+    });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// Strict mode — `--strict` closes every known limitation above.
+// Every `limitation` case that slips past the plain matcher MUST be blocked
+// when strict mode is on.
+// ═══════════════════════════════════════════════════════════════════
+
+describe("red team: strict mode blocks all limitations", () => {
+  // Flatten every marked limitation across all suites.
+  const limitations = suites.flatMap((s) =>
+    s.attempts
+      .filter((a) => a.limitation)
+      .map((a) => ({ label: s.label, ...a }))
+  );
+
+  for (const { label, technique, cmd, limitation } of limitations) {
+    it(`STRICT BLOCKS (${technique}): ${cmd}`, () => {
+      assertShSyntax(cmd);
+
+      const result = checkCommandDeep(cmd, rules, undefined, { strict: true });
+      assert.notStrictEqual(
+        result,
+        undefined,
+        `Strict mode failed to block "${cmd}" (${technique}) — limitation: ${limitation}`
+      );
+    });
+  }
+
+  // Strict mode must not break safe commands that the plain matcher allows.
+  const safeCases = [
+    "echo hello",
+    "git -C /repo push origin main",
+    'echo "hello world"',
+    "echo $HOME",
+  ];
+
+  for (const cmd of safeCases) {
+    it(`STRICT ALLOWS safe: ${cmd}`, () => {
+      assert.strictEqual(
+        checkCommandDeep(cmd, rules, undefined, { strict: true }),
+        undefined
+      );
     });
   }
 });

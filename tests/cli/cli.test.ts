@@ -22,6 +22,17 @@ function run(args: string, stdin?: string) {
   });
 }
 
+// Spawn without a shell, passing argv literally. Use this for tests whose -i
+// value contains shell metacharacters ($(), `${}`, backticks) so the outer shell
+// can't interpret them.
+function runArgs(args: string[], stdin?: string) {
+  return spawnSync("node", ["--import", "tsx", "bash-deny/cli.ts", ...args], {
+    input: stdin ?? undefined,
+    encoding: "utf-8",
+    stdio: stdin !== undefined ? ["pipe", "pipe", "pipe"] : undefined,
+  });
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // help and version
 // ═══════════════════════════════════════════════════════════════════
@@ -281,6 +292,166 @@ describe("cli --dry-run / --quiet", () => {
     const r = run('-r "rm -rf" -n -q -i "rm -rf /"');
     assert.strictEqual(r.status, 2);
     assert.ok(r.stderr.includes("mutually exclusive"));
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// --strict
+// ═══════════════════════════════════════════════════════════════════
+
+describe("cli --strict", () => {
+  // Metacharacter cases use runArgs (no outer shell) so $(), `${}`, and
+  // backticks reach the CLI literally instead of being interpreted by the shell.
+
+  it("-s blocks command substitution even with no rules", () => {
+    const r = runArgs(["-s", "-i", "echo $(rm -rf /)"]);
+    assert.strictEqual(r.status, 1);
+    assert.ok(r.stderr.includes("strict"));
+    assert.ok(r.stderr.includes("command substitution"));
+  });
+
+  it("-s with no rules allows a safe command", () => {
+    const r = runArgs(["-s", "-i", "echo hello"]);
+    assert.strictEqual(r.status, 0);
+  });
+
+  it("-s blocks backtick substitution", () => {
+    const r = runArgs(["-s", "-i", "echo `rm -rf /`"]);
+    assert.strictEqual(r.status, 1);
+    assert.ok(r.stderr.includes("backtick"));
+  });
+
+  it("-s blocks parameter expansion", () => {
+    const r = runArgs(["-s", "-i", "${XX}ls /tmp"]);
+    assert.strictEqual(r.status, 1);
+    assert.ok(r.stderr.includes("parameter expansion"));
+  });
+
+  it("-s blocks brace expansion", () => {
+    const r = runArgs(["-s", "-i", "{ls,/tmp}"]);
+    assert.strictEqual(r.status, 1);
+    assert.ok(r.stderr.includes("brace expansion"));
+  });
+
+  it("-s blocks absolute path command", () => {
+    const r = runArgs(["-s", "-r", "ls", "-i", "/bin/ls /tmp"]);
+    assert.strictEqual(r.status, 1);
+    assert.ok(r.stderr.includes("path-based"));
+  });
+
+  it("-s blocks relative ./ path command", () => {
+    const r = runArgs(["-s", "-r", "ls", "-i", "./ls /tmp"]);
+    assert.strictEqual(r.status, 1);
+    assert.ok(r.stderr.includes("path-based"));
+  });
+
+  it("-s blocks ../ path command", () => {
+    const r = runArgs(["-s", "-r", "ls", "-i", "../ls /tmp"]);
+    assert.strictEqual(r.status, 1);
+    assert.ok(r.stderr.includes("path-based"));
+  });
+
+  it("-s blocks ./rm -rf in a second segment", () => {
+    const r = runArgs(["-s", "-r", "rm", "-i", "cd /bin && ./rm -rf"]);
+    assert.strictEqual(r.status, 1);
+    assert.ok(r.stderr.includes("path-based"));
+  });
+
+  it("-s matches case-insensitively (LS vs rule ls)", () => {
+    const r = runArgs(["-s", "-r", "ls", "-i", "LS /tmp"]);
+    assert.strictEqual(r.status, 1);
+    assert.ok(r.stderr.includes("LS"));
+  });
+
+  it("-s does not flag constructs inside single quotes", () => {
+    // single-quoted $() is literal — strict must allow it
+    const r = runArgs(["-s", "-i", "echo 'safe $(rm)'"]);
+    assert.strictEqual(r.status, 0);
+  });
+
+  it("-s does not over-block a safe double-quoted string", () => {
+    const r = runArgs(["-s", "-i", 'echo "hello world"']);
+    assert.strictEqual(r.status, 0);
+  });
+
+  it("-s works with stdin", () => {
+    const r = runArgs(["-s"], "echo $(rm)\n");
+    assert.strictEqual(r.status, 1);
+  });
+
+  it("-s with -q exits 1 on construct", () => {
+    const r = runArgs(["-s", "-q", "-i", "echo $(rm)"]);
+    assert.strictEqual(r.status, 1);
+    assert.strictEqual(r.stdout, "");
+    assert.strictEqual(r.stderr, "");
+  });
+
+  it("-s with -n reports construct and exits 0", () => {
+    const r = runArgs(["-s", "-n", "-i", "echo $(rm)"]);
+    assert.strictEqual(r.status, 0);
+    assert.ok(r.stdout.includes("strict"));
+  });
+
+  // ── process substitution ────────────────────────────────────────
+  it("-s blocks process substitution <(...)", () => {
+    const r = runArgs(["-s", "-i", "cat <(rm -rf /)"]);
+    assert.strictEqual(r.status, 1);
+    assert.ok(r.stderr.includes("process substitution"));
+  });
+
+  it("-s blocks process substitution >(...)", () => {
+    const r = runArgs(["-s", "-i", "echo >(rm -rf /)"]);
+    assert.strictEqual(r.status, 1);
+    assert.ok(r.stderr.includes("process substitution"));
+  });
+
+  it("-s allows here-doc << (not process sub)", () => {
+    const r = runArgs(["-s", "-i", "cat << EOF\nhello\nEOF"]);
+    assert.strictEqual(r.status, 0);
+  });
+
+  // ── arithmetic ─────────────────────────────────────────────────
+  it("-s allows pure arithmetic $((...))", () => {
+    const r = runArgs(["-s", "-i", "echo $((1+1))"]);
+    assert.strictEqual(r.status, 0);
+  });
+
+  it("-s blocks command sub inside arithmetic", () => {
+    const r = runArgs(["-s", "-i", "echo $(( $(rm) ))"]);
+    assert.strictEqual(r.status, 1);
+    assert.ok(r.stderr.includes("command substitution"));
+  });
+
+  // ── comments ──────────────────────────────────────────────────
+  it("-s allows a construct inside a # comment", () => {
+    const r = runArgs(["-s", "-i", "echo hi # $(rm)"]);
+    assert.strictEqual(r.status, 0);
+  });
+
+  it("-s blocks a construct glued to a literal #", () => {
+    // `a#$(rm)`: the # is mid-word (literal), so $(rm) runs and is flagged.
+    const r = runArgs(["-s", "-i", "echo a#$(rm)"]);
+    assert.strictEqual(r.status, 1);
+    assert.ok(r.stderr.includes("command substitution"));
+  });
+
+  // ── eval (wrapper unwraps the payload) ────────────────────────
+  it("-s blocks eval with a quoted matching payload", () => {
+    const r = runArgs(["-s", "-r", "rm", "-i", "eval 'rm -rf /'"]);
+    assert.strictEqual(r.status, 1);
+    assert.ok(r.stderr.includes("rm"));
+  });
+
+  it("-s blocks a construct inside an eval payload", () => {
+    const r = runArgs(["-s", "-i", "eval 'echo $(rm)'"]);
+    assert.strictEqual(r.status, 1);
+    assert.ok(r.stderr.includes("command substitution"));
+  });
+
+  it("-s blocks a construct inside a bash -c payload", () => {
+    const r = runArgs(["-s", "-i", "bash -c 'echo $(rm)'"]);
+    assert.strictEqual(r.status, 1);
+    assert.ok(r.stderr.includes("command substitution"));
   });
 });
 

@@ -15,7 +15,7 @@ export type Verdict = "deny" | "pass";
 // ── Wrapper definitions ────────────────────────────────────────────
 
 /** Type of wrapper command. */
-export type WrapperKind = "passthrough" | "c";
+export type WrapperKind = "passthrough" | "c" | "concat";
 
 /** Definition for a known wrapper command. */
 export interface WrapperDef {
@@ -54,6 +54,10 @@ export const WRAPPERS: Readonly<Record<string, WrapperDef>> = {
   sh:          { kind: "c" },
   zsh:         { kind: "c" },
   dash:        { kind: "c" },
+
+  // concat-wrapper: join all args with spaces and re-tokenize (eval re-parses
+  // its concatenated arguments as a fresh command).
+  eval:        { kind: "concat" },
 };
 
 // ── Shell command segmenter ────────────────────────────────────────
@@ -128,13 +132,24 @@ export function splitCommands(input: string): string[][] {
 
 // ── Pattern matching ───────────────────────────────────────────────
 
-/** Scan-forward token match. Skips interspersed tokens. Trailing tokens implicitly allowed. */
-export function matchPattern(tokens: ReadonlyArray<string>, pat: ReadonlyArray<string>): boolean {
-  let ci = 0;
+/** Scan-forward token match. Skips interspersed tokens. Trailing tokens implicitly allowed.
+ *  When `caseInsensitive` is true (strict mode), tokens are compared lowercased so
+ *  `LS` matches a rule for `ls` — closing the case-folding evasion hole. */
+export function matchPattern(
+  tokens: ReadonlyArray<string>,
+  pat: ReadonlyArray<string>,
+  caseInsensitive = false,
+): boolean {
+  let idx = 0;
   for (const pt of pat) {
-    while (ci < tokens.length && tokens[ci] !== pt) ci++;
-    if (ci >= tokens.length) return false;
-    ci++;
+    const target = caseInsensitive ? pt.toLowerCase() : pt;
+    let found = false;
+    while (idx < tokens.length) {
+      const tok = caseInsensitive ? tokens[idx].toLowerCase() : tokens[idx];
+      idx++;
+      if (tok === target) { found = true; break; }
+    }
+    if (!found) return false;
   }
   return true;
 }
@@ -169,9 +184,14 @@ function isEnvAssignment(tok: string): boolean {
  *   unwrapCommand(["su","-c","rm -rf /"])       → ["rm","-rf","/"]
  *   unwrapCommand(["su","-l"])                  → null (interactive)
  */
+/** Optional callback invoked with each source string a wrapper re-parses
+ *  (the `-c` argument of a c-wrapper, or the joined args of `eval`). Strict
+ *  mode uses this to rescan the re-parsed source for evasion constructs that
+ *  were hidden inside quotes in the original input. */
 export function unwrapCommand(
   tokens: ReadonlyArray<string>,
   wrappers?: Readonly<Record<string, WrapperDef>>,
+  onReparse?: (source: string) => void,
 ): string[] | null {
   const wm = wrappers ?? WRAPPERS;
   let i = 0;
@@ -235,11 +255,13 @@ export function unwrapCommand(
           i++;
           if (i >= tokens.length) return null; // -c with no argument
           const subCmd = tokens[i];
+          // The wrapper re-parses this string — let strict mode rescan it.
+          onReparse?.(subCmd);
           // Re-tokenize the -c argument as a shell command
           const segments = splitCommands(subCmd);
           // Unwrap the first non-empty segment recursively
           for (const seg of segments) {
-            if (seg.length > 0) return unwrapCommand(seg, wm);
+            if (seg.length > 0) return unwrapCommand(seg, wm, onReparse);
           }
           return null;
         }
@@ -252,6 +274,21 @@ export function unwrapCommand(
       }
 
       // No -c found — interactive shell, can't check
+      return null;
+    }
+
+    if (def.kind === "concat") {
+      i++; // consume wrapper name
+      // eval concatenates ALL its arguments with spaces and re-parses the
+      // result as a fresh command — so re-tokenize the join and unwrap that.
+      const rest = tokens.slice(i);
+      if (rest.length === 0) return null;
+      const joined = rest.join(" ");
+      // The wrapper re-parses this string — let strict mode rescan it.
+      onReparse?.(joined);
+      for (const seg of splitCommands(joined)) {
+        if (seg.length > 0) return unwrapCommand(seg, wm, onReparse);
+      }
       return null;
     }
   }
@@ -309,11 +346,16 @@ export function mergePatterns(...lists: ReadonlyArray<ReadonlyArray<Pattern>>): 
   return lists.flat();
 }
 
-/** Find the last matching pattern, or undefined if none match. */
-export function findMatch(tokens: ReadonlyArray<string>, patterns: ReadonlyArray<Pattern>): Pattern | undefined {
+/** Find the last matching pattern, or undefined if none match.
+ *  `caseInsensitive` is forwarded to `matchPattern` (strict mode). */
+export function findMatch(
+  tokens: ReadonlyArray<string>,
+  patterns: ReadonlyArray<Pattern>,
+  caseInsensitive = false,
+): Pattern | undefined {
   let last: Pattern | undefined;
   for (const p of patterns) {
-    if (matchPattern(tokens, p.tokens)) last = p;
+    if (matchPattern(tokens, p.tokens, caseInsensitive)) last = p;
   }
   return last;
 }
