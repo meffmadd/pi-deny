@@ -29,6 +29,7 @@ describe("loadRulesPure", () => {
     ["inline splits on ;",                      undefined, "kubectl; git push --force; rm -rf", { ok: true, count: 3 }],
     ["inline trims whitespace",                 undefined, "  kubectl  ;   rm -rf  ", { ok: true, count: 2 }],
     ["inline skips empty segments",             undefined, ";;kubectl;;",   { ok: true, count: 1 }],
+    ["quoted semicolon stays in one rule",       undefined, "echo ';'",      { ok: true, count: 1 }],
     ["inline skips # comment segments",         undefined, "# top;rm -rf",  { ok: true, count: 1 }],
     ["inline: only # comments → empty",         undefined, "# only a comment", { ok: true, count: 0 }],
     ["inline: only semicolons → empty",         undefined, ";;;",          { ok: true, count: 0 }],
@@ -36,6 +37,9 @@ describe("loadRulesPure", () => {
     // ── file + inline merged (last wins) ─────────────────────
     ["file + inline merge (file first)",        "kubectl", "! kubectl logs", { ok: true, count: 2 }],
     ["inline can re-deny a file allow",         "! kubectl", "kubectl",     { ok: true, count: 2 }],
+
+    // ── validation ───────────────────────────────────────────
+    ["malformed inline quoting is rejected",     undefined, "echo 'oops",    { ok: false, error: "unclosed quote or escape in inline rules" }],
   ];
 
   for (const [name, fileContent, inlineRules, expected] of cases) {

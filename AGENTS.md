@@ -22,12 +22,14 @@ rm -rf                   # deny recursive force remove
 
 - Trailing tokens are **implicitly allowed** — `rm -rf` matches `rm -rf /tmp`
 - `!` prefix = allow-exception (last matching rule wins)
-- `#` lines are comments
+- Shell-style quoting and inline `#` comments are supported
+- Rules are anchored to the executable; scan-forward matching applies after it
+- `rm -rf` and `git push --force` compile to command-aware policies covering documented equivalent dangerous forms
 - Rules are loaded from `-f` files and/or `-r` inline rules. Inline rules come second and can override file rules via last-match-wins.
 
 ## Matching behavior
 
-**Scan-forward matching** — skips interspersed flags automatically:
+**Executable-anchored scan-forward matching** — the executable must match, then interspersed flags may be skipped:
 
 ```
 Rule:      git push --force
@@ -50,9 +52,9 @@ echo "safe && stuff" && kubectl delete pod
               ↑ literal        ↑ separator → second segment checked
 ```
 
-**Wrapper awareness** — detects `sudo`, `su -c`, `bash -c`, `eval`, `env`, `nohup`, `nice`, `chroot`, `flock`, and others, and checks the command underneath. `eval` is a concat-wrapper: its args are joined and re-tokenized, mirroring how `eval` re-parses them.
+**Wrapper awareness** — distinguishes direct argv, shell-string, split-string, and concatenated shell-string execution. It detects `sudo`, `su -c`, `bash -c`, `watch`, `env -S`, `eval`, `nohup`, `nice`, `chroot`, `flock`, and others, then checks the effective command underneath.
 
-**Strict mode** (`-s`) — closes every known red-team evasion that the token matcher can't see. The matcher is intentionally literal: it never expands variables, runs subshells, resolves globs, or looks up command paths. `-s` layers detection for those opaque constructs on top, so you get safe-by-default blocking without writing a rule for every technique:
+**Strict mode** (`-s`) — adds fail-closed detection for known opaque constructs that the token matcher cannot inspect. It is defense in depth, not a complete Bash sandbox or standalone security boundary:
 
 ```
 Command:   echo $(rm -rf /)        →  DENIED  (command substitution)
@@ -96,6 +98,7 @@ Options:
   -r, --rules <rules>  Inline rules (;-separated, same format as file lines)
   -i, --input <cmd>    The command string to check
   -s, --strict        Strict mode — block opaque shell constructs ($(), `${}`, backticks, brace expansion, path-based commands) and match case-insensitively
+      --basename      Normalize path-based command words before matching instead of blocking them
   -n, --dry-run        Print what would be blocked but always exit 0
   -q, --quiet          No output — exit code only (1 if denied, 0 if allowed)
   -h, --help           Print usage and exit
@@ -107,7 +110,10 @@ Options:
 - If both `-i` and stdin are provided, `-i` wins.
 - `-n` and `-q` are mutually exclusive.
 - `-s` (strict) works with or without rules; works with `-n` and `-q`.
-- Exit codes: 0 = allowed (or dry-run), 1 = denied/blocked, 2 = usage error.
+- `--basename` normalizes `/bin/ls`, `./ls`, and `../ls` to `ls`; with `-s`, other strict checks remain active.
+- Malformed input exits nonzero without a stack trace; unsupported strict syntax fails closed.
+- Here-document bodies are parsed as data. Strict mode scans active expansions only in unquoted here-docs.
+- Exit codes: 0 = allowed (or dry-run), 1 = denied/blocked, 2 = usage error or invalid shell command syntax.
 
 ### Examples
 
@@ -132,7 +138,7 @@ bash-deny -f .pi/.bashdeny -n -i "kubectl delete pod"
 bash-deny -f .pi/.bashdeny -q -i "kubectl get pods" && echo "allowed"
 
 # Strict mode (blocks $(), backticks, ${}, brace expansion, path-based commands)
-bash-deny -s -i "echo $(rm -rf /)"
+bash-deny -s -i 'echo $(rm -rf /)'
 bash-deny -s -f .pi/.bashdeny -i "kubectl delete pod"
 ```
 

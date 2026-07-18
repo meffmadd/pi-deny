@@ -3,24 +3,24 @@
   "version": "0.2.0",
   "description": "Gitignore-like shell command blocklist for CI, pre-commit hooks, and interactive use.",
   "type": "module",
-  "main": "./bash-deny/engine.ts",
   "bin": {
     "bash-deny": "./dist/bash-deny.js"
   },
   "files": [
-    "dist/",
-    "bash-deny/",
-    "AGENTS.md"
+    "dist/bash-deny.js",
+    "README.md"
   ],
   "engines": {
     "node": ">=20"
   },
   "scripts": {
     "lint": "eslint bash-deny tests scripts",
+    "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test tests/*.test.ts tests/scenarios/*.test.ts tests/cli/*.test.ts tests/parser/*.test.ts",
     "bench": "node --import tsx scripts/bench.ts",
+    "clean": "node --input-type=module -e \"import { rmSync } from 'node:fs'; rmSync('dist', { recursive: true, force: true })\"",
     "build": "esbuild bash-deny/cli.ts --bundle --platform=node --format=esm --banner:js='#!/usr/bin/env node' --outfile=dist/bash-deny.js",
-    "prepack": "npm run build"
+    "prepack": "npm run clean && npm run build"
   },
   "keywords": [
     "shell",
@@ -29,7 +29,6 @@
     "bash",
     "cli"
   ],
-  "license": "MIT",
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@types/node": "^25.9.5",

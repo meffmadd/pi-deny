@@ -74,8 +74,9 @@ describe("matchPattern", () => {
     // Scan-forward (skips interspersed flags, implicit trailing)
     [["git", "-C", "/x", "push", "--force", "origin"], ["git", "push", "--force"], true],
     [["git", "push", "origin", "main"], ["git", "push", "--force"], false],
-    [["sudo", "kubectl", "delete", "pod"], ["kubectl", "delete"], true],
-    [["sudo", "-u", "root", "kubectl", "delete", "pod"], ["kubectl", "delete"], true],
+    // Executable anchoring: wrappers must be removed before matching.
+    [["sudo", "kubectl", "delete", "pod"], ["kubectl", "delete"], false],
+    [["sudo", "-u", "root", "kubectl", "delete", "pod"], ["kubectl", "delete"], false],
 
     // Implicit trailing (extra tokens after last pattern token are allowed)
     [["git", "push"], ["git", "push"], true],
@@ -140,6 +141,9 @@ describe("unwrapCommand", () => {
     [["watch", "-n2", "kubectl", "delete", "pod"], ["kubectl", "delete", "pod"]],
     // watch -n 2 (space-separated value)
     [["watch", "-n", "2", "kubectl", "delete", "pod"], ["kubectl", "delete", "pod"]],
+    // watch reparses its joined command unless --exec requests direct argv.
+    [["watch", "kubectl delete pod"], ["kubectl", "delete", "pod"]],
+    [["watch", "--exec", "kubectl delete pod"], ["kubectl delete pod"]],
     [["ionice", "-c", "3", "rm", "-rf", "/"], ["rm", "-rf", "/"]],
     [["time", "kubectl", "delete", "pod"], ["kubectl", "delete", "pod"]],
     [["setsid", "kubectl", "delete", "pod"], ["kubectl", "delete", "pod"]],
@@ -154,6 +158,9 @@ describe("unwrapCommand", () => {
     // env
     // ═══════════════════════════════════════════════════════════
 
+    [["env"], ["env"]],
+    [["env", "-S", "kubectl delete pod"], ["kubectl", "delete", "pod"]],
+    [["env", "-S", "-i FOO=bar kubectl delete pod"], ["kubectl", "delete", "pod"]],
     [["env", "FOO=bar", "DEBUG=1", "kubectl", "delete", "pod"], ["kubectl", "delete", "pod"]],
     [["env", "kubectl", "delete", "pod"], ["kubectl", "delete", "pod"]],
     [["env", "-i", "FOO=bar", "kubectl", "delete", "pod"], ["kubectl", "delete", "pod"]],
@@ -279,15 +286,22 @@ describe("evaluate", () => {
     // Allowed by ! kubectl logs *
     [["kubectl", "logs", "nginx"], "pass"],
 
-    // Denied by git push --force *
+    // Denied by the command-aware git push --force policy
     [["git", "push", "--force", "origin"], "deny"],
+    [["git", "push", "-f", "origin"], "deny"],
+    [["git", "push", "--force-with-lease", "origin"], "deny"],
+    [["git", "push", "origin", "+main"], "deny"],
 
     // No match
     [["git", "push", "origin"], "pass"],
     [["echo", "hello"], "pass"],
 
-    // Denied by rm -rf *
+    // Denied by the command-aware rm -rf policy
     [["rm", "-rf", "/"], "deny"],
+    [["rm", "-fr", "/tmp"], "deny"],
+    [["rm", "-r", "-f", "/tmp"], "deny"],
+    [["rm", "--recursive", "--force", "/tmp"], "deny"],
+    [["rm", "-Rf", "/tmp"], "deny"],
 
     // No match (rm -r != rm -rf)
     [["rm", "-r", "/tmp"], "pass"],
@@ -334,6 +348,11 @@ describe("parseLine", () => {
     assert.strictEqual(p.allow, true);
     assert.deepStrictEqual(p.tokens, ["git", "push", "--force"]);
   });
+
+  it("handles shell quoting and inline comments", () => {
+    const p = parseLine('echo "hello world" # explanation');
+    assert.deepStrictEqual(p.tokens, ["echo", "hello world"]);
+  });
 });
 
 describe("parseFile", () => {
@@ -352,6 +371,12 @@ git push --force
     assert.deepStrictEqual(patterns[0].tokens, ["kubectl"]);
     assert.deepStrictEqual(patterns[1].tokens, ["kubectl", "logs"]);
     assert.deepStrictEqual(patterns[2].tokens, ["git", "push", "--force"]);
+  });
+
+  it("records rule source locations", () => {
+    const patterns = parseFile('kubectl # comment\necho "hello world"', "rules.bashdeny");
+    assert.deepStrictEqual(patterns.map((pattern) => pattern.tokens), [["kubectl"], ["echo", "hello world"]]);
+    assert.deepStrictEqual(patterns[1].source, { name: "rules.bashdeny", line: 2 });
   });
 });
 
@@ -413,9 +438,16 @@ describe("checkCommandDeep", () => {
     // chroot /x kubectl delete → denied
     ["chroot /newroot kubectl delete pod", "chroot /newroot kubectl delete pod"],
 
+    // shell-string and split-string wrappers
+    ["watch 'kubectl delete pod'", "watch kubectl delete pod"],
+    ["env -S 'kubectl delete pod'", "env -S kubectl delete pod"],
+    ["env -S '-i FOO=bar kubectl delete pod'", "env -S -i FOO=bar kubectl delete pod"],
+
     // wrapper with no deny match → passes
+    ["watch --exec 'kubectl delete pod'", undefined],
     ["sudo echo hello", undefined],
     ["sudo git push origin", undefined],
+    ["echo kubectl delete", undefined],
   ];
 
   for (const [input, expected] of cases) {
@@ -429,6 +461,22 @@ describe("checkCommandDeep", () => {
       }
     });
   }
+
+  it("supports option-aware allow-exceptions without skipping positionals", () => {
+    const kubectlRules = [parseLine("kubectl"), parseLine("! kubectl logs")];
+    assert.strictEqual(checkCommandDeep("kubectl --context prod logs", kubectlRules), undefined);
+    assert.ok(checkCommandDeep("kubectl delete pod logs", kubectlRules));
+
+    const rmRules = [parseLine("rm -rf"), parseLine("! rm -rf /safe")];
+    assert.strictEqual(checkCommandDeep("rm -rf /safe", rmRules), undefined);
+  });
+
+  it("returns a structured result for malformed input", () => {
+    const result = checkCommandDeep("echo 'unterminated", rules);
+    assert.ok(result);
+    assert.strictEqual(result.reason, "invalid");
+    assert.match(result.rule, /invalid shell syntax/);
+  });
 
   it("checkCommandDeep with unwrapping", () => {
     const rules = [parseLine("kubectl delete")];

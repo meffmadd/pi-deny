@@ -99,6 +99,7 @@ function braceClose(input: string, open: number): number {
 export function detectStrictConstruct(input: string): StrictViolation | null {
   let sq = false; // inside 'single' quotes — everything literal
   let dq = false; // inside "double" quotes — $ ` " \ \n special
+  let ansi = false; // inside $'ANSI-C quote' — backslash can escape a quote
   let esc = false; // backslash-escaped next char
 
   for (let i = 0; i < input.length; i++) {
@@ -112,12 +113,18 @@ export function detectStrictConstruct(input: string): StrictViolation | null {
     // end of line. Bash never runs anything in a comment, so stop scanning. A
     // mid-word `#` (e.g. `a#b`) is literal — fall through and keep scanning, so
     // a construct glued after it (e.g. `a#$(rm)`, which bash DOES run) is caught.
-    if (!sq && !dq && c === "#") {
+    if (!sq && !dq && !ansi && c === "#") {
       const prev = i > 0 ? input[i - 1] : "";
       if (i === 0 || /[\s;|&()]/.test(prev)) {
         while (i < input.length && input[i] !== "\n") i++;
         continue;
       }
+    }
+
+    if (ansi) {
+      if (c === "\\") { esc = true; continue; }
+      if (c === "'") ansi = false;
+      continue;
     }
 
     if (sq) {
@@ -156,8 +163,7 @@ export function detectStrictConstruct(input: string): StrictViolation | null {
           return { construct: "command substitution $(...)", snippet: "$(" };
         }
         if (n === "{") return { construct: "parameter expansion ${...}", snippet: "${" };
-        // Note: $'...' (ANSI-C quoting) is NOT flagged — the parser tokenizer
-        // decodes it, so ordinary rule matching already catches it.
+        if (n === "'") { ansi = true; i++; }
         continue;
       case "`":
         return { construct: "backtick substitution `...`", snippet: "`" };
@@ -187,6 +193,24 @@ export function detectStrictConstruct(input: string): StrictViolation | null {
     }
   }
 
+  return null;
+}
+
+/** Scan an unquoted here-document body. Quotes in a here-doc are ordinary
+ * characters; only a backslash can suppress $, `, or a newline. */
+export function detectStrictHereDocConstruct(input: string): StrictViolation | null {
+  let escaped = false;
+  for (let i = 0; i < input.length; i++) {
+    const char = input[i];
+    const next = input[i + 1] ?? "";
+    if (escaped) { escaped = false; continue; }
+    if (char === "\\") { escaped = true; continue; }
+    if (char === "`") return { construct: "backtick substitution `...`", snippet: "`" };
+    if (char === "$" && next === "{") return { construct: "parameter expansion ${...}", snippet: "${" };
+    if (char === "$" && next === "(" && input[i + 2] !== "(") {
+      return { construct: "command substitution $(...)", snippet: "$(" };
+    }
+  }
   return null;
 }
 

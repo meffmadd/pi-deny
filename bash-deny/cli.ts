@@ -10,7 +10,7 @@
  */
 
 import { parseArgs } from "node:util";
-import { type Pattern, parseFile, parseLine } from "./engine";
+import { type Pattern, parseFile, parseLine, splitRuleList } from "./engine";
 import { checkCommandDeep } from "./parser";
 import { readFileSync, existsSync, realpathSync } from "node:fs";
 import { createInterface } from "node:readline";
@@ -62,19 +62,24 @@ export type LoadResult =
 export function loadRulesPure(
   fileContent: string | undefined,
   inlineRules: string | undefined,
+  fileSource = "<file>",
 ): LoadResult {
   const patterns: Pattern[] = [];
-  if (fileContent !== undefined) {
-    for (const p of parseFile(fileContent)) patterns.push(p);
-  }
-  if (inlineRules !== undefined) {
-    for (const segment of inlineRules.split(";")) {
-      const trimmed = segment.trim();
-      if (trimmed === "" || trimmed.startsWith("#")) continue;
-      patterns.push(parseLine(trimmed));
+  try {
+    if (fileContent !== undefined) {
+      for (const p of parseFile(fileContent, fileSource)) patterns.push(p);
     }
+    if (inlineRules !== undefined) {
+      for (const [index, segment] of splitRuleList(inlineRules).entries()) {
+        const trimmed = segment.trim();
+        if (trimmed === "" || trimmed.startsWith("#")) continue;
+        patterns.push(parseLine(segment, { name: "<inline>", line: index + 1 }));
+      }
+    }
+    return { ok: true, patterns };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : "invalid rules" };
   }
-  return { ok: true, patterns };
 }
 
 /** Read a rule file (if given) and return the merged pattern list. */
@@ -93,35 +98,39 @@ function loadRules(
       return { ok: false, error: `could not read file: ${filePath}` };
     }
   }
-  return loadRulesPure(fileContent, inlineRules);
+  return loadRulesPure(fileContent, inlineRules, filePath ?? "<file>");
 }
 
 // ── Check one command ────────────────────────────────────────────
 
 export type CommandVerdict =
   | { kind: "allow" }
-  | { kind: "deny"; message: string };
+  | { kind: "deny"; message: string }
+  | { kind: "invalid"; message: string };
 
 /** Classify a command as allowed or denied, with a human-readable deny message. */
 export function classify(cmd: string, patterns: ReadonlyArray<Pattern>, strict = false, basename = false): CommandVerdict {
   const match = checkCommandDeep(cmd, patterns, undefined, { strict, basename });
   if (!match) return { kind: "allow" };
+  if (match.reason === "invalid") {
+    return { kind: "invalid", message: `bash-deny: error: ${match.rule}` };
+  }
   return {
     kind: "deny",
     message: `bash-deny: blocked: "${match.tokens.join(" ")}" (rule: "${match.rule}")`,
   };
 }
 
-/** Print a deny verdict (or nothing if quiet) and return whether it was denied. */
-function reportVerdict(v: CommandVerdict, dryRun: boolean, quiet: boolean): boolean {
-  if (v.kind === "allow") return false;
-  if (quiet) return true; // quiet: no output, just indicate denied
-  if (dryRun) {
-    console.log(v.message);
-  } else {
-    console.error(v.message);
+type ReportResult = "allow" | "deny" | "invalid";
+
+/** Print a verdict (or nothing if quiet) and return its disposition. */
+function reportVerdict(v: CommandVerdict, dryRun: boolean, quiet: boolean): ReportResult {
+  if (v.kind === "allow") return "allow";
+  if (!quiet) {
+    if (dryRun && v.kind === "deny") console.log(v.message);
+    else console.error(v.message);
   }
-  return true; // denied
+  return v.kind;
 }
 
 // ── Main ─────────────────────────────────────────────────────────
@@ -200,8 +209,8 @@ function main(): void {
       process.exit(2);
     }
     const v = classify(inputCmd, patterns, strict, basename);
-    const denied = reportVerdict(v, dryRun, quiet);
-    process.exit(denied && !dryRun ? 1 : 0);
+    const disposition = reportVerdict(v, dryRun, quiet);
+    process.exit(disposition === "invalid" ? 2 : disposition === "deny" && !dryRun ? 1 : 0);
   }
 
   // Check if stdin is a TTY (no pipe)
@@ -213,19 +222,19 @@ function main(): void {
 
   // Read stdin line by line
   const rl = createInterface({ input: process.stdin });
-  let denied = false;
+  let disposition: ReportResult = "allow";
   rl.on("line", (line: string) => {
-    if (!denied) {
+    if (disposition === "allow") {
       const v = classify(line, patterns, strict, basename);
       const result = reportVerdict(v, dryRun, quiet);
-      if (result && !dryRun) {
-        denied = true;
+      if (result === "invalid" || (result === "deny" && !dryRun)) {
+        disposition = result;
         rl.close();
       }
     }
   });
   rl.on("close", () => {
-    process.exit(denied && !dryRun ? 1 : 0);
+    process.exit(disposition === "invalid" ? 2 : disposition === "deny" && !dryRun ? 1 : 0);
   });
 }
 

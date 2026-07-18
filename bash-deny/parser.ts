@@ -1,5 +1,5 @@
 import { findMatch, normalizeCommandWord, splitCommands, unwrapCommands, type Pattern, type WrapperDef } from "./engine";
-import { detectStrictConstruct, isPathCommand, type CheckOptions, type StrictViolation } from "./strict";
+import { detectStrictConstruct, detectStrictHereDocConstruct, isPathCommand, type CheckOptions, type StrictViolation } from "./strict";
 
 export type ReservedWord =
  // loops
@@ -305,6 +305,7 @@ export function tokenize(_input: string): Tok[] {
               else state.tok += c;
               state.i++;
             }
+            if (depth > 0) throw new ParseError("unclosed command substitution", state.i);
           } else if (state.peek() === "{") {
             // ${...} — opaque parameter expansion
             state.quoted = true;
@@ -324,21 +325,24 @@ export function tokenize(_input: string): Tok[] {
               else state.tok += c;
               state.i++;
             }
+            if (depth > 0) throw new ParseError("unclosed parameter expansion", state.i);
           } else if (state.peek() === "'") {
             // $'...' — ANSI-C quoting. Evaluate backslash escapes and append
             // the decoded characters (not the raw source), so $'ls' tokenizes
             // identically to ls and deny rules match both forms.
             state.quoted = true;
             state.i += 2; // skip $'
+            let closed = false;
             while (!state.done()) {
               const c = state.input[state.i];
-              if (c === "'") { break; } // closing quote
+              if (c === "'") { closed = true; break; } // closing quote
               if (c !== "\\") { state.tok += c; state.i++; continue; }
-              if (state.i + 1 >= state.input.length) { break; } // trailing backslash
+              if (state.i + 1 >= state.input.length) break;
               const esc = evalAnsiCEscape(state.input, state.i);
               state.tok += esc.value;
               state.i += esc.consumed;
             }
+            if (!closed) throw new ParseError("unclosed ANSI-C quote", state.i);
           } else {
             state.tok += b;
           }
@@ -353,7 +357,7 @@ export function tokenize(_input: string): Tok[] {
   if (state.sq) {
     throw new ParseError("unclosed single quote", state.i);
   } else if (state.dq) {
-    throw new ParseError("unclosed doulbe quote", state.i);
+    throw new ParseError("unclosed double quote", state.i);
   } else if (state.esc) {
     throw new ParseError("dangling escape", state.i);
   }
@@ -700,6 +704,101 @@ export function* leaves(node: Node): Generator<string[]> {
   }
 }
 
+type HereDoc = {
+  delimiter: string;
+  stripTabs: boolean;
+  quoted: boolean;
+};
+
+type PreparedInput = {
+  executable: string;
+  activeHereDocBodies: string[];
+};
+
+/** Find here-document declarations on one shell source line. */
+function hereDocsOnLine(line: string): HereDoc[] {
+  const docs: HereDoc[] = [];
+  let sq = false, dq = false, esc = false;
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+    if (esc) { esc = false; continue; }
+    if (sq) { if (char === "'") sq = false; continue; }
+    if (dq) {
+      if (char === "\\") esc = true;
+      else if (char === '"') dq = false;
+      continue;
+    }
+    if (char === "\\") { esc = true; continue; }
+    if (char === "'") { sq = true; continue; }
+    if (char === '"') { dq = true; continue; }
+    if (char !== "<" || line[i + 1] !== "<" || line[i + 2] === "<") continue;
+
+    let j = i + 2;
+    const stripTabs = line[j] === "-";
+    if (stripTabs) j++;
+    while (line[j] === " " || line[j] === "\t") j++;
+    const start = j;
+    let wordSq = false, wordDq = false, wordEsc = false;
+    while (j < line.length) {
+      const value = line[j];
+      if (wordEsc) { wordEsc = false; j++; continue; }
+      if (wordSq) { if (value === "'") wordSq = false; j++; continue; }
+      if (wordDq) {
+        if (value === "\\") wordEsc = true;
+        else if (value === '"') wordDq = false;
+        j++;
+        continue;
+      }
+      if (value === "\\") { wordEsc = true; j++; continue; }
+      if (value === "'") { wordSq = true; j++; continue; }
+      if (value === '"') { wordDq = true; j++; continue; }
+      if (/[\s;|&<>]/.test(value)) break;
+      j++;
+    }
+    const raw = line.slice(start, j);
+    if (raw === "") throw new ParseError("missing here-document delimiter", start);
+    const token = tokenize(raw).find((candidate) =>
+      candidate.kind === "word" || candidate.kind === "kw" || candidate.kind === "assign");
+    if (!token) throw new ParseError("invalid here-document delimiter", start);
+    const delimiter = token.kind === "assign" ? `${token.name}=${token.value}` : token.value;
+    docs.push({ delimiter, stripTabs, quoted: /['"\\]/.test(raw) });
+    i = j - 1;
+  }
+  return docs;
+}
+
+/** Remove here-document bodies from parser input. Their text is data, not a
+ * sequence of commands. Unquoted bodies are returned separately because Bash
+ * still performs parameter/command/backtick expansion in them. */
+export function prepareHereDocs(input: string): PreparedInput {
+  const lines = input.match(/[^\n]*(?:\n|$)/g)?.filter((line) => line !== "") ?? [];
+  const pending: HereDoc[] = [];
+  const executable: string[] = [];
+  const activeHereDocBodies: string[] = [];
+
+  for (const sourceLine of lines) {
+    const hasNewline = sourceLine.endsWith("\n");
+    const plainLine = sourceLine.slice(0, hasNewline ? -1 : undefined).replace(/\r$/, "");
+    if (pending.length > 0) {
+      const doc = pending[0];
+      const compared = doc.stripTabs ? plainLine.replace(/^\t+/, "") : plainLine;
+      executable.push(hasNewline ? "\n" : "");
+      if (compared === doc.delimiter) {
+        pending.shift();
+      } else if (!doc.quoted) {
+        activeHereDocBodies.push(`${plainLine}${hasNewline ? "\n" : ""}`);
+      }
+      continue;
+    }
+
+    executable.push(sourceLine);
+    pending.push(...hereDocsOnLine(plainLine));
+  }
+
+  if (pending.length > 0) throw new ParseError(`unterminated here-document (wanted ${pending[0].delimiter})`, input.length);
+  return { executable: executable.join(""), activeHereDocBodies };
+}
+
 /** Remove simple-command prefixes before resolving its executable. Shell
  * assignments and redirections are setup, not command words. */
 function stripCommandPrefixes(tokens: ReadonlyArray<string>): string[] {
@@ -726,9 +825,13 @@ function checkTokens(
   basename: boolean,
 ): string | undefined {
   const h = strict ? reparseHandler() : undefined;
-  const command = stripCommandPrefixes(tokens);
+  let command = stripCommandPrefixes(tokens);
   if (command.length === 0) return undefined;
-  const unwrapped = unwrapCommands(command, wrappers, h?.onReparse);
+  if (isPathCommand(command)) {
+    if (basename) command = [normalizeCommandWord(command[0]), ...command.slice(1)];
+    else if (strict) return "(strict: path-based command)";
+  }
+  const unwrapped = unwrapCommands(command, wrappers, h?.onReparse, basename);
   if (h?.violation()) return `(strict: ${h.violation()!.construct})`;
   if (unwrapped === null) return "(invalid wrapper usage)";
 
@@ -755,29 +858,45 @@ function checkTokens(
  * hidden inside control-flow constructs (for/while/if/case/subshell/brace) are
  * found.
  *
- * For input the parser can't fully consume — out-of-scope constructs like
- * function definitions and arithmetic (parser.md §2), or malformed input — it
- * falls back to the `splitCommands`-based shallow check, so behavior is never
- * worse than the pre-parser engine. The fallback only triggers when the parser
- * throws or leaves leftover tokens; fully-parsed input uses the AST (which is
- * more precise, e.g. it doesn't treat `for x in rm` loop values as commands).
+ * Malformed lexical/parser input returns a structured invalid result. Valid
+ * input containing an out-of-scope grammar construct may use the legacy
+ * shallow fallback in plain mode; strict mode rejects unsupported constructs
+ * instead. Fully parsed input uses the AST, which is more precise (for example,
+ * it does not treat `for x in rm` loop values as commands).
  */
+export type CommandMatch = {
+  tokens: string[];
+  rule: string;
+  reason?: "invalid";
+};
+
 export function checkCommandDeep(
   input: string,
   patterns: ReadonlyArray<Pattern>,
   wrappers?: Readonly<Record<string, WrapperDef>>,
   options?: CheckOptions,
-): { tokens: string[]; rule: string } | undefined {
+): CommandMatch | undefined {
   const strict = options?.strict ?? false;
   const basename = options?.basename ?? false;
 
-  // Strict construct detection runs on the raw input before parsing — it catches
-  // opaque/obfuscation constructs ($(...), `${...}`, backticks, $'...', brace
-  // expansion) that the token-level matcher can't see into, no matter where they
-  // appear in the command.
+  let prepared: PreparedInput;
+  let lexicalTokens: Tok[];
+  try {
+    prepared = prepareHereDocs(input);
+    lexicalTokens = tokenize(prepared.executable);
+  } catch (error) {
+    if (!(error instanceof ParseError)) throw error;
+    return { tokens: [input], rule: `(invalid shell syntax: ${error.message})`, reason: "invalid" };
+  }
+
+  // Here-doc bodies are not commands. Unquoted bodies do perform expansions,
+  // so strict mode scans those bodies with here-doc-specific quote semantics.
   if (strict) {
-    const v = detectStrictConstruct(input);
-    if (v) return { tokens: [input], rule: `(strict: ${v.construct})` };
+    const violation = detectStrictConstruct(prepared.executable)
+      ?? prepared.activeHereDocBodies
+        .map(detectStrictHereDocConstruct)
+        .find((candidate): candidate is StrictViolation => candidate !== null);
+    if (violation) return { tokens: [input], rule: `(strict: ${violation.construct})` };
   }
 
   // Strict mode also rescans every source string a wrapper re-parses (the -c
@@ -787,7 +906,7 @@ export function checkCommandDeep(
 
   // Deep path: parse and walk AST leaves (catches control-flow hidden commands).
   try {
-    const state = new ParserState(tokenize(input));
+    const state = new ParserState(lexicalTokens);
     const ast = parseList(state);
     if (state.peek().kind === "eof") {
       for (const leaf of leaves(ast)) {
@@ -799,11 +918,22 @@ export function checkCommandDeep(
     }
     // Leftover tokens: an out-of-scope construct the parser doesn't handle.
     // Fall through to the shallow path.
-  } catch (e) {
-    if (!(e instanceof ParseError)) throw e;
-    // Malformed input (e.g. unclosed construct). Fall through to the shallow path.
+  } catch (error) {
+    if (!(error instanceof ParseError)) throw error;
+    return { tokens: [input], rule: `(invalid shell syntax: ${error.message})`, reason: "invalid" };
   }
-  return checkCommandShallow(input, patterns, wrappers, options);
+
+  // Valid lexical input containing an explicitly unsupported grammar construct
+  // may use the legacy shallow path in plain mode. Strict mode fails closed.
+  if (strict) {
+    return { tokens: [input], rule: "(invalid shell syntax: unsupported construct)", reason: "invalid" };
+  }
+  try {
+    return checkCommandShallow(prepared.executable, patterns, wrappers, options);
+  } catch (error) {
+    if (!(error instanceof ParseError)) throw error;
+    return { tokens: [input], rule: `(invalid shell syntax: ${error.message})`, reason: "invalid" };
+  }
 }
 
 /**

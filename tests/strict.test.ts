@@ -59,6 +59,7 @@ describe("detectStrictConstruct", () => {
     ["l$'\\163' /tmp", null],            // → `ls`
     ['echo "$\'safe\'"', null],        // $' inside double quotes is NOT ANSI-C quoting
     ["echo $'$(rm)'", null],           // $(rm) is literal inside $'...' — safe
+    ["$'x\\''$(kubectl delete pod)", "command substitution $(...)"], // active after escaped ANSI-C quote
 
     // ── brace expansion {a,b} / {1..5} ────────────────────────────
     ["{ls,/tmp}", "brace expansion {...}"],
@@ -270,6 +271,8 @@ describe("checkCommandDeep (strict mode)", () => {
     ["bash -c construct payload", "bash -c 'echo $(rm)'", true],
     ["su -c construct payload", "su -c 'echo $(rm)'", true],
     ["sh -c construct payload", "sh -c 'echo $(rm)'", true],
+    ["watch shell-string payload", "watch 'echo danger hello'", true],
+    ["env split-string payload", "env -S 'echo danger hello'", true],
 
     // ── strict does not over-block safe commands ───────────────────
     ["safe command still allowed", "echo hello", false],
@@ -372,6 +375,7 @@ describe("checkCommandDeep (basename mode)", () => {
     ["bash -c /bin/ls", "bash -c '/bin/ls /tmp'", lsRules, { basename: true }, true],
     ["su -c /bin/ls", "su -c '/bin/ls /tmp'", lsRules, { basename: true }, true],
     ["env /bin/ls", "env FOO=bar /bin/ls /tmp", lsRules, { basename: true }, true],
+    ["path-based shell wrapper", "/bin/sh -c 'ls /tmp'", lsRules, { strict: true, basename: true }, true],
 
     // ── command word only, args are data ────────────────────────
     ["arg /bin/ls NOT normalized", "rm /bin/ls", rmLsRules, { basename: true }, false],

@@ -9,18 +9,34 @@ import { tokenize } from "./parser";
 
 // ── Types ──────────────────────────────────────────────────────────
 
+export type RuleSource = {
+  readonly name: string;
+  readonly line: number;
+};
+
+export type SemanticPolicy = "rm-recursive-force" | "git-force-push";
+
 export type Pattern = {
   readonly allow: boolean;
   readonly tokens: ReadonlyArray<string>;
   readonly raw: string;
+  readonly source?: RuleSource;
+  /** Command-aware policy inferred for the two documented destructive rules. */
+  readonly semantic?: SemanticPolicy;
 };
+
+export class RuleParseError extends Error {
+  constructor(message: string, source?: RuleSource) {
+    super(source ? `${source.name}:${source.line}: ${message}` : message);
+  }
+}
 
 export type Verdict = "deny" | "pass";
 
 // ── Wrapper definitions ────────────────────────────────────────────
 
 /** Type of wrapper command. */
-export type WrapperKind = "passthrough" | "c" | "concat";
+export type WrapperKind = "passthrough" | "c" | "concat" | "shell-string" | "split-string";
 
 /** Definition for a known wrapper command. */
 export interface WrapperDef {
@@ -29,12 +45,14 @@ export interface WrapperDef {
   valuedFlags?: Set<string>;
 }
 
-/** Built-in wrapper commands. Passthrough wrappers are stripped with their flags;
- *  c-wrappers extract the -c argument and re-tokenize it. */
+/** Built-in wrapper commands. Execution modes distinguish direct argv from
+ * shell strings, split strings, -c payloads, and concatenated eval payloads. */
 export const WRAPPERS: Readonly<Record<string, WrapperDef>> = {
   // Passthrough: strip name + flags/args, whatever's left is the real command
   sudo:        { kind: "passthrough", valuedFlags: new Set(["-u", "-g", "--user", "--group", "-p", "--prompt", "-C", "--close-from", "-r", "--role", "-t", "--type", "-h", "--host", "-T", "--timeout"]) },
-  watch:       { kind: "passthrough", valuedFlags: new Set(["-n", "--interval", "--title"]) },
+  // watch joins its remaining argv and gives it to `sh -c`; --exec/-x opts
+  // into direct argv execution.
+  watch:       { kind: "shell-string", valuedFlags: new Set(["-n", "--interval", "--equexit", "--shotsdir"]) },
   nohup:       { kind: "passthrough" },
   nice:        { kind: "passthrough", valuedFlags: new Set(["-n", "--adjustment"]) },
   ionice:      { kind: "passthrough", valuedFlags: new Set(["-c", "--class", "-n", "--classdata", "-p", "--pid"]) },
@@ -47,7 +65,9 @@ export const WRAPPERS: Readonly<Record<string, WrapperDef>> = {
   unshare:     { kind: "passthrough", valuedFlags: new Set(["-R", "--root", "-w", "--wd", "-S", "--setuid", "-G", "--setgid"]) },
   nsenter:     { kind: "passthrough", valuedFlags: new Set(["-t", "--target"]) },
   // env: strip name, then consume VAR=val assignments
-  env:         { kind: "passthrough", valuedFlags: new Set(["-u", "--unset"]) },
+  // env normally executes direct argv; -S/--split-string first splits one
+  // string into argv using env's split-string facility.
+  env:         { kind: "split-string", valuedFlags: new Set(["-u", "--unset", "-C", "--chdir", "--default-signal", "--ignore-signal", "--block-signal"]) },
   // chroot: strip name + flags, consume one positional (new root), rest is command
   chroot:      { kind: "passthrough" },
   // flock: strip name + flags, consume one positional (lock file), rest is command
@@ -119,12 +139,20 @@ export function matchPattern(
   pat: ReadonlyArray<string>,
   caseInsensitive = false,
 ): boolean {
-  let idx = 0;
-  for (const pt of pat) {
-    const target = caseInsensitive ? pt.toLowerCase() : pt;
+  if (tokens.length === 0 || pat.length === 0) return false;
+  const fold = (value: string) => caseInsensitive ? value.toLowerCase() : value;
+
+  // A rule always names the executable. Wrapper stripping happens before this
+  // function, so scanning from arbitrary argv positions would make a rule for
+  // `kubectl` incorrectly match `echo kubectl`.
+  if (fold(tokens[0]) !== fold(pat[0])) return false;
+
+  let idx = 1;
+  for (let p = 1; p < pat.length; p++) {
+    const target = fold(pat[p]);
     let found = false;
     while (idx < tokens.length) {
-      const tok = caseInsensitive ? tokens[idx].toLowerCase() : tokens[idx];
+      const tok = fold(tokens[idx]);
       idx++;
       if (tok === target) { found = true; break; }
     }
@@ -163,20 +191,32 @@ function isEnvAssignment(tok: string): boolean {
  *   unwrapCommand(["su","-c","rm -rf /"])       → ["rm","-rf","/"]
  *   unwrapCommand(["su","-l"])                  → null (interactive)
  */
-/** Optional callback invoked with each source string a wrapper re-parses
- *  (the `-c` argument of a c-wrapper, or the joined args of `eval`). Strict
- *  mode uses this to rescan the re-parsed source for evasion constructs that
- *  were hidden inside quotes in the original input. */
+/** Optional callback invoked with each source string a wrapper reparses or
+ * splits (`-c`, watch, env -S, or eval). Strict mode uses this to rescan source
+ * that was hidden inside quotes in the original input. */
 export function unwrapCommands(
   tokens: ReadonlyArray<string>,
   wrappers?: Readonly<Record<string, WrapperDef>>,
   onReparse?: (source: string) => void,
+  normalizeWrapperPaths = false,
 ): string[][] | null {
   const wm = wrappers ?? WRAPPERS;
   let i = 0;
 
+  const unwrapSegments = (source: string): string[][] | null => {
+    onReparse?.(source);
+    const nested = splitCommands(source).map((segment) =>
+      unwrapCommands(segment, wm, onReparse, normalizeWrapperPaths));
+    return nested.every((commands): commands is string[][] => commands !== null)
+      ? nested.flat()
+      : null;
+  };
+
   while (i < tokens.length) {
-    const name = tokens[i];
+    const rawName = tokens[i];
+    const name = normalizeWrapperPaths && rawName.includes("/")
+      ? normalizeCommandWord(rawName)
+      : rawName;
     const def = wm[name];
 
     if (!def) {
@@ -194,41 +234,18 @@ export function unwrapCommands(
           if (tokens[j] === "-c" || tokens[j] === "--command") {
             const source = tokens[j + 1];
             if (source === undefined) return null;
-            onReparse?.(source);
-            const segments = splitCommands(source);
-            const unwrapped = segments.map((seg) => unwrapCommands(seg, wm, onReparse));
-            return unwrapped.every((commands): commands is string[][] => commands !== null)
-              ? unwrapped.flat()
-              : null;
+            return unwrapSegments(source);
           }
         }
       }
 
-      // env: consume flags and VAR=val assignments (interleaved, any order)
-      if (name === "env") {
-        while (i < tokens.length) {
-          const tok = tokens[i];
-          if (isFlag(tok)) {
-            i++;
-            const fname = flagName(tok);
-            if (def.valuedFlags?.has(fname) && !hasInlineValue(tok)) {
-              if (i < tokens.length) i++;
-            }
-          } else if (isEnvAssignment(tok)) {
-            i++;
-          } else {
-            break;
-          }
-        }
-      } else {
-        // Consume flags and their values
-        while (i < tokens.length && isFlag(tokens[i])) {
-          const flag = tokens[i];
-          i++;
-          const fname = flagName(flag);
-          if (def.valuedFlags?.has(fname) && !hasInlineValue(flag)) {
-            if (i < tokens.length) i++; // consume value
-          }
+      // Consume flags and their values.
+      while (i < tokens.length && isFlag(tokens[i])) {
+        const flag = tokens[i];
+        i++;
+        const fname = flagName(flag);
+        if (def.valuedFlags?.has(fname) && !hasInlineValue(flag)) {
+          if (i < tokens.length) i++; // consume value
         }
       }
 
@@ -238,6 +255,71 @@ export function unwrapCommands(
       }
 
       continue; // check for chained wrappers
+    }
+
+    if (def.kind === "shell-string") {
+      i++; // consume watch
+      let direct = false;
+      while (i < tokens.length && isFlag(tokens[i])) {
+        const option = tokens[i];
+        if (option === "--exec" || option === "-x") direct = true;
+        i++;
+        const fname = flagName(option);
+        if (def.valuedFlags?.has(fname) && !hasInlineValue(option) && i < tokens.length) i++;
+      }
+      if (i >= tokens.length) return null;
+      if (direct) continue;
+      return unwrapSegments(tokens.slice(i).join(" "));
+    }
+
+    if (def.kind === "split-string") {
+      i++; // consume env
+      let split: string | undefined;
+      const trailing: string[] = [];
+      while (i < tokens.length) {
+        const token = tokens[i];
+        if (token === "-S" || token === "--split-string") {
+          if (tokens[i + 1] === undefined) return null;
+          split = tokens[i + 1];
+          i += 2;
+        } else if (token.startsWith("-S") && token.length > 2) {
+          split = token.slice(2);
+          i++;
+        } else if (token.startsWith("--split-string=")) {
+          split = token.slice("--split-string=".length);
+          i++;
+        } else if (isFlag(token)) {
+          i++;
+          const fname = flagName(token);
+          if (def.valuedFlags?.has(fname) && !hasInlineValue(token) && i < tokens.length) i++;
+        } else if (isEnvAssignment(token)) {
+          i++;
+        } else {
+          trailing.push(...tokens.slice(i));
+          i = tokens.length;
+        }
+      }
+      if (split === undefined) {
+        // Bare `env` is a valid command that prints the environment; there is
+        // no underlying argv to unwrap.
+        if (trailing.length === 0) return [[name]];
+        return unwrapCommands(trailing, wm, onReparse, normalizeWrapperPaths);
+      }
+      // env -S performs argv splitting, not shell execution. The shell lexer is
+      // a conservative approximation; separators produce multiple commands and
+      // are all checked rather than ignored.
+      onReparse?.(split);
+      const segments = splitCommands(split);
+      if (segments.length === 0) return null;
+      const expanded = segments.map((segment, index) =>
+        index === segments.length - 1 ? [...segment, ...trailing] : segment);
+      // Feed inserted argv back through env option/assignment handling: the
+      // split string may itself begin with env options or NAME=value entries.
+      const nested = expanded.map((segment) =>
+        unwrapCommands(["env", ...segment], wm, onReparse, normalizeWrapperPaths));
+      return nested.every((commands): commands is string[][] => commands !== null)
+        ? nested.flat()
+        : null;
     }
 
     if (def.kind === "c") {
@@ -251,13 +333,7 @@ export function unwrapCommands(
           i++;
           if (i >= tokens.length) return null; // -c with no argument
           const subCmd = tokens[i];
-          // The wrapper re-parses this string — let strict mode rescan it.
-          onReparse?.(subCmd);
-          // Re-tokenize and check every command the shell will execute.
-          const commands = splitCommands(subCmd).map((seg) => unwrapCommands(seg, wm, onReparse));
-          return commands.every((value): value is string[][] => value !== null)
-            ? commands.flat()
-            : null;
+          return unwrapSegments(subCmd);
         }
 
         // Not -c: consume flag (and possibly its value)
@@ -278,12 +354,7 @@ export function unwrapCommands(
       const rest = tokens.slice(i);
       if (rest.length === 0) return null;
       const joined = rest.join(" ");
-      // The wrapper re-parses this string — let strict mode rescan it.
-      onReparse?.(joined);
-      const commands = splitCommands(joined).map((seg) => unwrapCommands(seg, wm, onReparse));
-      return commands.every((value): value is string[][] => value !== null)
-        ? commands.flat()
-        : null;
+      return unwrapSegments(joined);
     }
   }
 
@@ -319,23 +390,83 @@ export function evaluate(tokens: ReadonlyArray<string>, patterns: ReadonlyArray<
  * Parse a single .bashdeny line into a Pattern.
  * Lines starting with ! are allow-exceptions.
  */
-export function parseLine(line: string): Pattern {
+export function parseLine(line: string, source?: RuleSource): Pattern {
   const trimmed = line.trim();
   const allow = trimmed.startsWith("!");
   const body = allow ? trimmed.slice(1).trim() : trimmed;
-  return { allow, tokens: body.split(/\s+/), raw: line };
+  if (body === "" || body.startsWith("#")) {
+    throw new RuleParseError("empty rule", source);
+  }
+
+  let lexed;
+  try {
+    lexed = tokenize(body);
+  } catch (error) {
+    throw new RuleParseError(error instanceof Error ? error.message : "invalid rule", source);
+  }
+  const tokens: string[] = [];
+  for (const token of lexed) {
+    if (token.kind === "eof") continue;
+    if (token.kind === "word" || token.kind === "kw") tokens.push(token.value);
+    else if (token.kind === "assign") tokens.push(`${token.name}=${token.value}`);
+    else throw new RuleParseError("shell operators are not valid in a rule; quote them to match literally", source);
+  }
+  if (tokens.length === 0) throw new RuleParseError("empty rule", source);
+
+  let semantic: SemanticPolicy | undefined;
+  if (!allow && tokens.length === 2 && tokens[0] === "rm" && tokens[1] === "-rf") {
+    semantic = "rm-recursive-force";
+  } else if (!allow && tokens.length === 3 && tokens[0] === "git" && tokens[1] === "push" && tokens[2] === "--force") {
+    semantic = "git-force-push";
+  }
+  return { allow, tokens, raw: line, source, semantic };
 }
 
 /**
  * Parse a .bashdeny file content into Pattern[].
  * Empty lines and #-comments are skipped.
  */
-export function parseFile(content: string): Pattern[] {
-  return content
-    .split("\n")
-    .map((l) => l.trim())
-    .filter((l) => l && !l.startsWith("#"))
-    .map(parseLine);
+export function parseFile(content: string, sourceName = "<rules>"): Pattern[] {
+  const patterns: Pattern[] = [];
+  for (const [index, raw] of content.split("\n").entries()) {
+    const line = raw.trim();
+    if (line === "" || line.startsWith("#")) continue;
+    patterns.push(parseLine(raw, { name: sourceName, line: index + 1 }));
+  }
+  return patterns;
+}
+
+/** Split -r's semicolon-separated rules without splitting quoted semicolons. */
+export function splitRuleList(input: string): string[] {
+  const rules: string[] = [];
+  let current = "";
+  let sq = false, dq = false, ansi = false, esc = false;
+  for (let i = 0; i < input.length; i++) {
+    const char = input[i];
+    if (esc) { current += char; esc = false; continue; }
+    if (ansi) {
+      current += char;
+      if (char === "\\") esc = true;
+      else if (char === "'") ansi = false;
+      continue;
+    }
+    if (sq) { current += char; if (char === "'") sq = false; continue; }
+    if (dq) {
+      current += char;
+      if (char === "\\") esc = true;
+      else if (char === '"') dq = false;
+      continue;
+    }
+    if (char === "$" && input[i + 1] === "'") { current += "$'"; ansi = true; i++; continue; }
+    if (char === "'") { current += char; sq = true; continue; }
+    if (char === '"') { current += char; dq = true; continue; }
+    if (char === "\\") { current += char; esc = true; continue; }
+    if (char === ";") { rules.push(current); current = ""; continue; }
+    current += char;
+  }
+  if (sq || dq || ansi || esc) throw new RuleParseError("unclosed quote or escape in inline rules");
+  rules.push(current);
+  return rules;
 }
 
 /**
@@ -353,6 +484,22 @@ export function mergePatterns(...lists: ReadonlyArray<ReadonlyArray<Pattern>>): 
  * executable and cannot skip a positional argument to reach a later token.
  * This prevents `! kubectl logs` from authorizing `kubectl delete pod logs`.
  */
+const VALUED_OPTIONS: Readonly<Record<string, ReadonlySet<string>>> = {
+  kubectl: new Set(["--context", "--namespace", "-n", "--kubeconfig", "--cluster", "--user", "--server", "--token", "--request-timeout", "--as", "--as-group", "--cache-dir", "--certificate-authority", "--client-certificate", "--client-key", "--tls-server-name"]),
+  git: new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace"]),
+};
+
+function skippableOptionWidth(command: string, tokens: ReadonlyArray<string>, index: number): number {
+  const option = tokens[index];
+  if (!isFlag(option)) return 0;
+  if (hasInlineValue(option)) return 1;
+  const name = flagName(option);
+  if (VALUED_OPTIONS[command]?.has(name)) return index + 1 < tokens.length ? 2 : 0;
+  // Unknown options are not skipped by allow rules: accidentally treating a
+  // positional as their value could widen an exception.
+  return 0;
+}
+
 function matchAllowPattern(
   tokens: ReadonlyArray<string>,
   pat: ReadonlyArray<string>,
@@ -366,13 +513,44 @@ function matchAllowPattern(
 
   let index = 1;
   for (let p = 1; p < pat.length; p++) {
-    // Options may be interspersed, but a positional argument may not: it
-    // changes the command/subcommand being authorized.
-    while (index < tokens.length && isFlag(tokens[index])) index++;
-    if (index >= tokens.length || !equal(tokens[index], pat[p])) return false;
+    while (index < tokens.length && !equal(tokens[index], pat[p])) {
+      const width = skippableOptionWidth(pat[0], tokens, index);
+      if (width === 0) return false;
+      index += width;
+    }
+    if (index >= tokens.length) return false;
     index++;
   }
   return true;
+}
+
+function matchesSemanticPolicy(tokens: ReadonlyArray<string>, policy: SemanticPolicy, caseInsensitive: boolean): boolean {
+  const fold = (value: string) => caseInsensitive ? value.toLowerCase() : value;
+  if (policy === "rm-recursive-force") {
+    if (fold(tokens[0] ?? "") !== "rm") return false;
+    let recursive = false, force = false;
+    for (const token of tokens.slice(1)) {
+      if (token === "--") break;
+      const option = fold(token);
+      if (option === "--recursive") recursive = true;
+      else if (option === "--force") force = true;
+      else if (/^-[^-]/.test(option)) {
+        const flags = option.slice(1);
+        if (flags.includes("r")) recursive = true;
+        if (caseInsensitive ? flags.includes("r") : flags.includes("R")) recursive = true;
+        if (flags.includes("f")) force = true;
+      }
+    }
+    return recursive && force;
+  }
+
+  if (fold(tokens[0] ?? "") !== "git") return false;
+  const push = tokens.findIndex((token, index) => index > 0 && fold(token) === "push");
+  if (push === -1) return false;
+  return tokens.slice(push + 1).some((token) => {
+    const value = fold(token);
+    return value === "-f" || value === "--force" || value.startsWith("--force-with-lease") || token.startsWith("+");
+  });
 }
 
 export function findMatch(
@@ -384,7 +562,9 @@ export function findMatch(
   for (const p of patterns) {
     const matches = p.allow
       ? matchAllowPattern(tokens, p.tokens, caseInsensitive)
-      : matchPattern(tokens, p.tokens, caseInsensitive);
+      : p.semantic
+        ? matchesSemanticPolicy(tokens, p.semantic, caseInsensitive)
+        : matchPattern(tokens, p.tokens, caseInsensitive);
     if (matches) last = p;
   }
   return last;

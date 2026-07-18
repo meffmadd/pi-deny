@@ -201,6 +201,13 @@ describe("cli -i input", () => {
     assert.ok(r.stderr.includes("no command"));
   });
 
+  it("malformed shell input → structured error exit 2 without a stack", () => {
+    const r = runArgs(["-r", "rm", "-i", "echo 'unterminated"]);
+    assert.strictEqual(r.status, 2);
+    assert.ok(r.stderr.includes("invalid shell syntax"));
+    assert.ok(!r.stderr.includes("ParseError"));
+  });
+
   it("-i wins over stdin", () => {
     const r = run('-r "kubectl delete" -i "echo hello"',
       "kubectl delete pod\n");

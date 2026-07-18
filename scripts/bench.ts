@@ -233,6 +233,19 @@ function buildPool(size: number): string[] {
   return pool;
 }
 
+// Bench labels are executable expectations, not descriptive-only fixtures.
+// Abort before timing if either corpus disagrees with the engine.
+for (const cmd of allowedCmds) {
+  if (checkCommandDeep(cmd, shortRules) !== undefined) {
+    throw new Error(`benchmark command labeled allowed was denied: ${cmd}`);
+  }
+}
+for (const cmd of deniedCmds) {
+  if (checkCommandDeep(cmd, shortRules) === undefined) {
+    throw new Error(`benchmark command labeled denied was allowed: ${cmd}`);
+  }
+}
+
 const pool = buildPool(200);
 
 // ── Benchmarks ────────────────────────────────────────────────────
