@@ -33,6 +33,10 @@ Options:
                       case-insensitively, and rescan wrapper payloads
                       (bash -c, su -c, eval). Works with no rules — blocks
                       suspicious constructs as-is.
+      --basename        Normalize path-based command words (/bin/ls → ls,
+                      ./rm → rm, ../rm → rm) before matching instead of
+                      blocking them. Replaces -s's path-based block with
+                      normalize-and-match. Requires rules or -s.
   -n, --dry-run        Print what would be blocked but always exit 0
   -q, --quiet          No output — exit code only (1 if denied, 0 if allowed)
   -h, --help           Print usage and exit
@@ -98,8 +102,8 @@ export type CommandVerdict =
   | { kind: "deny"; message: string };
 
 /** Classify a command as allowed or denied, with a human-readable deny message. */
-export function classify(cmd: string, patterns: ReadonlyArray<Pattern>, strict = false): CommandVerdict {
-  const match = checkCommandDeep(cmd, patterns, undefined, { strict });
+export function classify(cmd: string, patterns: ReadonlyArray<Pattern>, strict = false, basename = false): CommandVerdict {
+  const match = checkCommandDeep(cmd, patterns, undefined, { strict, basename });
   if (!match) return { kind: "allow" };
   return {
     kind: "deny",
@@ -131,6 +135,7 @@ function main(): void {
         rules:    { type: "string", short: "r" },
         input:    { type: "string", short: "i" },
         strict:   { type: "boolean", short: "s" },
+        basename: { type: "boolean" },
         "dry-run": { type: "boolean", short: "n" },
         quiet:    { type: "boolean", short: "q" },
         help:     { type: "boolean", short: "h" },
@@ -167,6 +172,7 @@ function main(): void {
   const inlineRules = values.rules as string | undefined;
   const inputCmd = values.input as string | undefined;
   const strict = (values.strict as boolean) ?? false;
+  const basename = (values.basename as boolean) ?? false;
   const dryRun = (values["dry-run"] as boolean) ?? false;
   const quiet = (values.quiet as boolean) ?? false;
 
@@ -192,7 +198,7 @@ function main(): void {
       printUsage(process.stderr);
       process.exit(2);
     }
-    const v = classify(inputCmd, patterns, strict);
+    const v = classify(inputCmd, patterns, strict, basename);
     const denied = reportVerdict(v, dryRun, quiet);
     process.exit(denied && !dryRun ? 1 : 0);
   }
@@ -209,7 +215,7 @@ function main(): void {
   let denied = false;
   rl.on("line", (line: string) => {
     if (!denied) {
-      const v = classify(line, patterns, strict);
+      const v = classify(line, patterns, strict, basename);
       const result = reportVerdict(v, dryRun, quiet);
       if (result && !dryRun) {
         denied = true;

@@ -190,3 +190,35 @@ rm -rf
     });
   }
 });
+
+// ═══════════════════════════════════════════════════════════════════
+// --basename normalization
+// ═══════════════════════════════════════════════════════════════════
+
+describe("classify — --basename normalization", () => {
+  const rules = [parseLine("ls"), parseLine("rm ls")];
+
+  const cases: [string, boolean, "allow" | "deny"][] = [
+    // ── basename normalizes path-based command words ──────────────
+    ["/bin/ls /tmp", true, "deny"],
+    ["./ls /tmp", true, "deny"],
+    ["../ls /tmp", true, "deny"],
+    ["sudo /bin/ls /tmp", true, "deny"],
+
+    // ── args are not normalized ────────────────────────────────────
+    ["rm /bin/ls", true, "allow"],   // /bin/ls is an arg; rule 'rm ls' doesn't match
+
+    // ── safe / non-matching ────────────────────────────────────────
+    ["echo hello", true, "allow"],
+
+    // ── without basename, path slips past ─────────────────────────
+    ["/bin/ls /tmp", false, "allow"],
+  ];
+
+  for (const [cmd, basename, expected] of cases) {
+    it(`"${cmd}" (basename=${basename}) → ${expected}`, () => {
+      assertShSyntax(cmd);
+      assert.strictEqual(classify(cmd, rules, false, basename).kind, expected);
+    });
+  }
+});

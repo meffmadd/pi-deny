@@ -359,3 +359,30 @@ export function findMatch(
   }
   return last;
 }
+
+// ── Command word normalization ────────────────────────────────────
+
+/**
+ * Normalize a path-based command word to its basename. Called only when the
+ * command word contains a `/` (i.e. `isPathCommand` is true). Pure string
+ * math — no PATH lookup, no shell, no side effects.
+ *
+ *   "/bin/ls"  → "ls"     "./rm"   → "rm"     "../rm"  → "rm"
+ *   "/bin/ls/" → "ls"     "ls"     → (not called — no "/")
+ *
+ * Degenerate basenames (empty, ".", "..") are left unchanged so a path like
+ * "/" or "./" can't normalize to something that spuriously matches a rule:
+ *
+ *   "/"  → "/"  (unchanged)    "./" → "./" (unchanged)    "//" → "//"
+ */
+export function normalizeCommandWord(word: string): string {
+  // Strip trailing "/" runs first: "/bin/ls/" → "/bin/ls", "./" → "."
+  const w = word.replace(/\/+$/, "");
+  if (w === "") return word; // all slashes ("/", "//") — don't normalize to empty
+  const idx = w.lastIndexOf("/");
+  const base = idx === -1 ? w : w.slice(idx + 1);
+  // Degenerate basenames ("", ".", "..") are meaningless as commands — leave
+  // the word unchanged so it can't spuriously match a rule.
+  if (base === "" || base === "." || base === "..") return word;
+  return base;
+}

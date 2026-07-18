@@ -1,4 +1,4 @@
-import { findMatch, splitCommands, unwrapCommand, type Pattern, type WrapperDef } from "./engine";
+import { findMatch, normalizeCommandWord, splitCommands, unwrapCommand, type Pattern, type WrapperDef } from "./engine";
 import { detectStrictConstruct, isPathCommand, type CheckOptions, type StrictViolation } from "./strict";
 
 export type ReservedWord =
@@ -719,6 +719,7 @@ export function checkCommandDeep(
   options?: CheckOptions,
 ): { tokens: string[]; rule: string } | undefined {
   const strict = options?.strict ?? false;
+  const basename = options?.basename ?? false;
 
   // Strict construct detection runs on the raw input before parsing — it catches
   // opaque/obfuscation constructs ($(...), `${...}`, backticks, $'...', brace
@@ -747,10 +748,17 @@ export function checkCommandDeep(
           return { tokens: leaf, rule: `(strict: ${h.violation()!.construct})` };
         }
         if (unwrapped === null) return { tokens: leaf, rule: "(invalid wrapper usage)" };
-        if (strict && isPathCommand(unwrapped)) {
-          return { tokens: leaf, rule: "(strict: path-based command)" };
+        // Path-based command word: normalize (--basename) or block (-s).
+        // --basename supersedes -s's path block — when both are set, normalize.
+        let effective = unwrapped;
+        if (isPathCommand(unwrapped)) {
+          if (basename) {
+            effective = [normalizeCommandWord(unwrapped[0]), ...unwrapped.slice(1)];
+          } else if (strict) {
+            return { tokens: leaf, rule: "(strict: path-based command)" };
+          }
         }
-        const match = findMatch(unwrapped, patterns, strict);
+        const match = findMatch(effective, patterns, strict);
         if (match && !match.allow) return { tokens: leaf, rule: match.raw };
       }
       return undefined;
@@ -789,6 +797,7 @@ function checkCommandShallow(
   options?: CheckOptions,
 ): { tokens: string[]; rule: string } | undefined {
   const strict = options?.strict ?? false;
+  const basename = options?.basename ?? false;
   for (const tokens of splitCommands(input)) {
     if (tokens.length === 0) continue;
     const h = strict ? reparseHandler() : undefined;
@@ -797,10 +806,16 @@ function checkCommandShallow(
       return { tokens, rule: `(strict: ${h.violation()!.construct})` };
     }
     if (unwrapped === null) return { tokens, rule: "(invalid wrapper usage)" };
-    if (strict && isPathCommand(unwrapped)) {
-      return { tokens, rule: "(strict: path-based command)" };
+    // Path-based command word: normalize (--basename) or block (-s).
+    let effective = unwrapped;
+    if (isPathCommand(unwrapped)) {
+      if (basename) {
+        effective = [normalizeCommandWord(unwrapped[0]), ...unwrapped.slice(1)];
+      } else if (strict) {
+        return { tokens, rule: "(strict: path-based command)" };
+      }
     }
-    const match = findMatch(unwrapped, patterns, strict);
+    const match = findMatch(effective, patterns, strict);
     if (match && !match.allow) return { tokens, rule: match.raw };
   }
   return undefined;

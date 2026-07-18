@@ -42,6 +42,11 @@ export type StrictViolation = {
 export type CheckOptions = {
   /** Enable strict-mode evasion detection. */
   strict?: boolean;
+  /** Normalize path-based command words (/bin/ls → ls, ./rm → rm) before
+   *  matching instead of blocking them. Replaces -s's path-based block with
+   *  normalize-and-match. Orthogonal to `strict` — combine both for the
+   *  strongest coverage (normalize paths + block constructs + case-fold). */
+  basename?: boolean;
 };
 
 // ── Brace expansion detection ──────────────────────────────────────

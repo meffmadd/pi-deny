@@ -217,3 +217,32 @@ describe("red team: strict mode blocks all limitations", () => {
     });
   }
 });
+
+// ═══════════════════════════════════════════════════════════════════
+// Basename mode — `--basename` closes the PATH-based limitations (full
+// path / ./ / ../) that the plain matcher can't see. Construct-based
+// limitations ($(), backticks, ${}, brace) are NOT closed here — those
+// still need -s. Only the path limitations flip from todo to blocked.
+// ═══════════════════════════════════════════════════════════════════
+
+describe("red team: basename mode blocks path limitations", () => {
+  // Only the path-based limitations are closed by --basename.
+  const pathLimitations = suites.flatMap((s) =>
+    s.attempts
+      .filter((a) => a.limitation && /path/i.test(a.limitation))
+      .map((a) => ({ label: s.label, ...a }))
+  );
+
+  for (const { technique, cmd, limitation } of pathLimitations) {
+    it(`BASENAME BLOCKS (${technique}): ${cmd}`, () => {
+      assertShSyntax(cmd);
+
+      const result = checkCommandDeep(cmd, rules, undefined, { basename: true });
+      assert.notStrictEqual(
+        result,
+        undefined,
+        `Basename mode failed to block "${cmd}" (${technique}) — limitation: ${limitation}`
+      );
+    });
+  }
+});

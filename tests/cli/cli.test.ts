@@ -456,6 +456,107 @@ describe("cli --strict", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════
+// --basename
+// ═══════════════════════════════════════════════════════════════════
+
+describe("cli --basename", () => {
+  it("--basename normalizes /bin/ls → ls (deny)", () => {
+    const r = runArgs(["--basename", "-r", "ls", "-i", "/bin/ls /tmp"]);
+    assert.strictEqual(r.status, 1);
+    assert.ok(r.stderr.includes("blocked"));
+    assert.ok(r.stderr.includes("/bin/ls /tmp"));
+    assert.ok(r.stderr.includes('rule: "ls"'));
+  });
+
+  it("--basename normalizes ./ls → ls (deny)", () => {
+    const r = runArgs(["--basename", "-r", "ls", "-i", "./ls /tmp"]);
+    assert.strictEqual(r.status, 1);
+    assert.ok(r.stderr.includes("./ls /tmp"));
+  });
+
+  it("--basename normalizes ../ls → ls (deny)", () => {
+    const r = runArgs(["--basename", "-r", "ls", "-i", "../ls /tmp"]);
+    assert.strictEqual(r.status, 1);
+  });
+
+  it("--basename unwraps sudo /bin/ls → ls (deny)", () => {
+    const r = runArgs(["--basename", "-r", "ls", "-i", "sudo /bin/ls /tmp"]);
+    assert.strictEqual(r.status, 1);
+  });
+
+  it("--basename unwraps sh -c /bin/ls → ls (deny)", () => {
+    const r = runArgs(["--basename", "-r", "ls", "-i", "sh -c '/bin/ls /tmp'"]);
+    assert.strictEqual(r.status, 1);
+  });
+
+  it("--basename does NOT normalize args (rm /bin/ls vs rule 'rm ls' → pass)", () => {
+    const r = runArgs(["--basename", "-r", "rm ls", "-i", "rm /bin/ls"]);
+    assert.strictEqual(r.status, 0);
+  });
+
+  it("--basename documented gap: xargs /bin/rm (pass)", () => {
+    const r = runArgs(["--basename", "-r", "rm", "-i", "xargs /bin/rm"]);
+    assert.strictEqual(r.status, 0);
+  });
+
+  it("--basename alone (no case-fold): /bin/LS vs rule ls (pass)", () => {
+    const r = runArgs(["--basename", "-r", "ls", "-i", "/bin/LS /tmp"]);
+    assert.strictEqual(r.status, 0);
+  });
+
+  it("-s --basename: /bin/LS case-folded (deny)", () => {
+    const r = runArgs(["-s", "--basename", "-r", "ls", "-i", "/bin/LS /tmp"]);
+    assert.strictEqual(r.status, 1);
+  });
+
+  it("-s without --basename still blocks /bin/ls (deny, path-based)", () => {
+    const r = runArgs(["-s", "-r", "ls", "-i", "/bin/ls /tmp"]);
+    assert.strictEqual(r.status, 1);
+    assert.ok(r.stderr.includes("path-based"));
+  });
+
+  it("--basename with no rules and no -s → exit 2", () => {
+    const r = runArgs(["--basename", "-i", "/bin/ls /tmp"]);
+    assert.strictEqual(r.status, 2);
+    assert.ok(r.stderr.includes("no rules"));
+  });
+
+  it("--basename with -n reports and exits 0", () => {
+    const r = runArgs(["--basename", "-n", "-r", "ls", "-i", "/bin/ls /tmp"]);
+    assert.strictEqual(r.status, 0);
+    assert.ok(r.stdout.includes("blocked"));
+  });
+
+  it("--basename with -q exits 1 on match (no output)", () => {
+    const r = runArgs(["--basename", "-q", "-r", "ls", "-i", "/bin/ls /tmp"]);
+    assert.strictEqual(r.status, 1);
+    assert.strictEqual(r.stdout, "");
+    assert.strictEqual(r.stderr, "");
+  });
+
+  it("--basename allows non-matching bare command", () => {
+    const r = runArgs(["--basename", "-r", "ls", "-i", "echo hello"]);
+    assert.strictEqual(r.status, 0);
+  });
+
+  it("--basename with ! allow-exception on a normalized path", () => {
+    const r = runArgs(["--basename", "-r", "ls;! ls /safe", "-i", "/bin/ls /safe"]);
+    assert.strictEqual(r.status, 0);
+  });
+
+  it("--basename works with stdin", () => {
+    const r = runArgs(["--basename", "-r", "ls"], "/bin/ls /tmp\n");
+    assert.strictEqual(r.status, 1);
+  });
+
+  it("--help mentions --basename", () => {
+    const r = run("--help");
+    assert.strictEqual(r.status, 0);
+    assert.ok(r.stdout.includes("--basename"));
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
 // exit codes
 // ═══════════════════════════════════════════════════════════════════
 

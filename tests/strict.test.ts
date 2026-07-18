@@ -10,7 +10,7 @@ import {
   detectStrictConstruct,
   isPathCommand,
 } from "../bash-deny/strict";
-import { matchPattern, findMatch, parseLine } from "../bash-deny/engine";
+import { matchPattern, findMatch, parseLine, type Pattern } from "../bash-deny/engine";
 import { checkCommandDeep } from "../bash-deny/parser";
 import type { StrictViolation } from "../bash-deny/strict";
 
@@ -344,5 +344,80 @@ describe("checkCommandDeep (strict mode)", () => {
       checkCommandDeep("eval 'echo $(rm)'", rules, undefined, { strict: false }),
       undefined,
     );
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// checkCommandDeep with { basename: true }
+// ═══════════════════════════════════════════════════════════════════
+
+describe("checkCommandDeep (basename mode)", () => {
+  const lsRules = [parseLine("ls")];
+  const rmLsRules = [parseLine("rm ls")];
+  const rmRules = [parseLine("rm")];
+
+  // [label, input, rules, options, expectDenied]
+  const cases: [string, string, Pattern[], { strict?: boolean; basename?: boolean }, boolean][] = [
+    // ── --basename normalizes path-based command words ───────────
+    ["absolute path", "/bin/ls /tmp", lsRules, { basename: true }, true],
+    ["relative ./", "./ls /tmp", lsRules, { basename: true }, true],
+    ["parent relative ../", "../ls /tmp", lsRules, { basename: true }, true],
+    ["deep absolute path", "/usr/bin/ls /tmp", lsRules, { basename: true }, true],
+    ["trailing slash stripped", "/bin/ls/ /tmp", lsRules, { basename: true }, true],
+
+    // ── wrapper-unwrapped path commands are normalized ────────────
+    ["sudo /bin/ls", "sudo /bin/ls /tmp", lsRules, { basename: true }, true],
+    ["sudo ./ls", "sudo ./ls /tmp", lsRules, { basename: true }, true],
+    ["sh -c /bin/ls", "sh -c '/bin/ls /tmp'", lsRules, { basename: true }, true],
+    ["bash -c /bin/ls", "bash -c '/bin/ls /tmp'", lsRules, { basename: true }, true],
+    ["su -c /bin/ls", "su -c '/bin/ls /tmp'", lsRules, { basename: true }, true],
+    ["env /bin/ls", "env FOO=bar /bin/ls /tmp", lsRules, { basename: true }, true],
+
+    // ── command word only, args are data ────────────────────────
+    ["arg /bin/ls NOT normalized", "rm /bin/ls", rmLsRules, { basename: true }, false],
+    ["xargs /bin/rm gap", "xargs /bin/rm", rmRules, { basename: true }, false],
+
+    // ── case NOT folded under --basename alone ───────────────────
+    ["case not folded (absolute)", "/bin/LS /tmp", lsRules, { basename: true }, false],
+    ["case not folded (relative)", "./LS /tmp", lsRules, { basename: true }, false],
+
+    // ── -s --basename: normalized + case-folded ──────────────────
+    ["normalized + case-folded", "/bin/LS /tmp", lsRules, { strict: true, basename: true }, true],
+    ["normalized + case-folded ./", "./LS /tmp", lsRules, { strict: true, basename: true }, true],
+
+    // ── -s alone still blocks paths (basename doesn't weaken -s) ──
+    ["-s alone blocks path", "/bin/ls /tmp", lsRules, { strict: true }, true],
+
+    // ── no basename, no strict: path slips past (regression guard) ──
+    ["no flags: path slips", "/bin/ls /tmp", lsRules, {}, false],
+
+    // ── basename does not over-normalize safe bare commands ──────
+    ["bare command still matches", "ls /tmp", lsRules, { basename: true }, true],
+    ["bare non-matching passes", "echo hello", lsRules, { basename: true }, false],
+
+    // ── degenerate paths not normalized to empty ─────────────────
+    ["root path unchanged", "/ /tmp", lsRules, { basename: true }, false],
+    ["./ unchanged", "./ /tmp", lsRules, { basename: true }, false],
+
+    // ── basename allows an ! exception on a normalized path ─────
+    ["! exception matches normalized path", "/bin/ls /safe", [parseLine("ls"), parseLine("! ls /safe")], { basename: true }, false],
+  ];
+
+  for (const [label, input, rules, opts, expectDenied] of cases) {
+    it(`${label}: ${JSON.stringify(input)} → ${expectDenied ? "deny" : "allow"}`, () => {
+      const result = checkCommandDeep(input, rules, undefined, opts);
+      if (expectDenied) {
+        assert.ok(result, `expected deny but got allow for: ${input}`);
+      } else {
+        assert.strictEqual(result, undefined, `expected allow but got: ${JSON.stringify(result)}`);
+      }
+    });
+  }
+
+  it("deny reports the original (wrapped/path) tokens, not the normalized ones", () => {
+    const r = checkCommandDeep("/bin/ls /tmp", lsRules, undefined, { basename: true });
+    assert.ok(r);
+    assert.deepStrictEqual(r!.tokens, ["/bin/ls", "/tmp"]);
+    assert.strictEqual(r!.rule, "ls");
   });
 });

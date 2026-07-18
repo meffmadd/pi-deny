@@ -13,6 +13,7 @@ import {
   parseLine,
   parseFile,
   unwrapCommand,
+  normalizeCommandWord,
   type WrapperDef,
 } from "../bash-deny/engine";
 import { checkCommandDeep } from "../bash-deny/parser";
@@ -449,4 +450,49 @@ describe("checkCommandDeep", () => {
     assert.ok(result);
     assert.strictEqual(result!.rule, "(invalid wrapper usage)");
   });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// normalizeCommandWord
+// ═══════════════════════════════════════════════════════════════════
+
+describe("normalizeCommandWord", () => {
+  const cases: [string, string][] = [
+    // ── absolute paths ─────────────────────────────────────────────
+    ["/bin/ls", "ls"],
+    ["/usr/bin/env", "env"],
+    ["/opt/homebrew/bin/node", "node"],
+
+    // ── relative paths ──────────────────────────────────────────────
+    ["./rm", "rm"],
+    ["../rm", "rm"],
+    ["./foo/bar", "bar"],
+    ["subdir/prog", "prog"],
+
+    // ── trailing slash stripped first ──────────────────────────────
+    ["/bin/ls/", "ls"],
+    ["./rm/", "rm"],
+    ["foo/", "foo"],
+    ["./foo/bar/", "bar"],
+
+    // ── degenerate: all slashes — left unchanged (no empty basename) ──
+    ["/", "/"],
+    ["//", "//"],
+    ["///", "///"],
+
+    // ── degenerate: basename is "." or ".." — left unchanged ──────
+    ["./", "./"],
+    ["../", "../"],
+    ["/bin/ls/.", "/bin/ls/."],
+
+    // ── bare command (no slash) passes through unchanged ───────────
+    ["ls", "ls"],
+    ["kubectl", "kubectl"],
+  ];
+
+  for (const [word, expected] of cases) {
+    it(`${JSON.stringify(word)} → ${JSON.stringify(expected)}`, () => {
+      assert.strictEqual(normalizeCommandWord(word), expected);
+    });
+  }
 });
