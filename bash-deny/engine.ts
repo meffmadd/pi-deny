@@ -2,6 +2,11 @@
  * bash-deny — Shell command parsing and pattern matching engine
  */
 
+// `tokenize` is the canonical shell lexer. This import is intentionally a
+// runtime cycle (parser imports matching helpers from this module); neither
+// module invokes the other while it is being initialized.
+import { tokenize } from "./parser";
+
 // ── Types ──────────────────────────────────────────────────────────
 
 export type Pattern = {
@@ -29,24 +34,27 @@ export interface WrapperDef {
 export const WRAPPERS: Readonly<Record<string, WrapperDef>> = {
   // Passthrough: strip name + flags/args, whatever's left is the real command
   sudo:        { kind: "passthrough", valuedFlags: new Set(["-u", "-g", "--user", "--group", "-p", "--prompt", "-C", "--close-from", "-r", "--role", "-t", "--type", "-h", "--host", "-T", "--timeout"]) },
-  watch:       { kind: "passthrough", valuedFlags: new Set(["-n", "--interval", "--title", "-x", "--exec"]) },
+  watch:       { kind: "passthrough", valuedFlags: new Set(["-n", "--interval", "--title"]) },
   nohup:       { kind: "passthrough" },
   nice:        { kind: "passthrough", valuedFlags: new Set(["-n", "--adjustment"]) },
   ionice:      { kind: "passthrough", valuedFlags: new Set(["-c", "--class", "-n", "--classdata", "-p", "--pid"]) },
   time:        { kind: "passthrough", valuedFlags: new Set(["-f", "--format", "-o", "--output"]) },
-  setsid:      { kind: "passthrough", valuedFlags: new Set(["-w", "--wait"]) },
+  setsid:      { kind: "passthrough" },
   taskset:     { kind: "passthrough", valuedFlags: new Set(["-c", "--cpu-list", "-p", "--pid"]) },
   prlimit:     { kind: "passthrough" },
   stdbuf:      { kind: "passthrough", valuedFlags: new Set(["-i", "--input", "-o", "--output", "-e", "--error"]) },
-  "systemd-run": { kind: "passthrough", valuedFlags: new Set(["-p", "--property", "-u", "--user", "--uid", "--gid", "-M", "--machine", "-E", "--setenv"]) },
+  "systemd-run": { kind: "passthrough", valuedFlags: new Set(["-p", "--property", "-u", "--uid", "--gid", "-M", "--machine", "-E", "--setenv"]) },
   unshare:     { kind: "passthrough", valuedFlags: new Set(["-R", "--root", "-w", "--wd", "-S", "--setuid", "-G", "--setgid"]) },
   nsenter:     { kind: "passthrough", valuedFlags: new Set(["-t", "--target"]) },
   // env: strip name, then consume VAR=val assignments
-  env:         { kind: "passthrough" },
+  env:         { kind: "passthrough", valuedFlags: new Set(["-u", "--unset"]) },
   // chroot: strip name + flags, consume one positional (new root), rest is command
   chroot:      { kind: "passthrough" },
   // flock: strip name + flags, consume one positional (lock file), rest is command
-  flock:       { kind: "passthrough", valuedFlags: new Set(["-c", "--command", "-w", "--wait", "-E", "--conflict-exit-code"]) },
+  flock:       { kind: "passthrough", valuedFlags: new Set(["-w", "--wait", "-E", "--conflict-exit-code"]) },
+  // Shell builtins that execute their remaining command.
+  command:     { kind: "passthrough" },
+  exec:        { kind: "passthrough", valuedFlags: new Set(["-a"]) },
 
   // c-wrappers: extract the -c argument and re-tokenize it
   su:          { kind: "c" },
@@ -73,59 +81,30 @@ export const WRAPPERS: Readonly<Record<string, WrapperDef>> = {
  *   "echo \"hello && world\""
  *   → [["echo","hello && world"]]
  */
-const TWO_CHAR_SEPARATORS = new Set(["&&", "||", "|&", ";;"]);
-const SINGLE_CHAR_SEPARATORS = new Set([";", "|", "&"]);
-
 export function splitCommands(input: string): string[][] {
   const out: string[][] = [];
-  let seg: string[] = [];
-  let tok = "";
-  let sq = false; // inside 'single' quotes
-  let dq = false; // inside "double" quotes
-  let esc = false; // backslash escape (next char is literal)
+  let segment: string[] = [];
+  const cut = () => {
+    if (segment.length > 0) out.push(segment);
+    segment = [];
+  };
 
-  const flush = () => { if (tok) { seg.push(tok); tok = ""; } };
-  const cut = () => { flush(); if (seg.length) out.push(seg); seg = []; };
-
-  for (let i = 0; i < input.length; i++) {
-    const c = input[i];
-    const n2 = input.slice(i, i + 2);
-    const n = n2[1] ?? "";
-
-    if (esc) { tok += c; esc = false; continue; }
-
-    // Inside single quotes — everything literal, only ' ends it
-    if (sq) {
-      if (c === "'") sq = false;
-      else tok += c;
-      continue;
+  // Keep segmentation and all reparsing on exactly the same lexer as the AST
+  // parser. In particular, this decodes ANSI-C words ($'\\154\\163') before
+  // wrapper payloads are inspected.
+  for (const token of tokenize(input)) {
+    switch (token.kind) {
+      case "word": segment.push(token.value); break;
+      case "assign": segment.push(`${token.name}=${token.value}`); break;
+      case "kw": segment.push(token.value); break;
+      case "semi": case "dsemi": case "nl": case "op": case "amp": cut(); break;
+      // Parentheses/braces delimit compound commands. The AST path handles
+      // those precisely; keeping their words in separate fallback segments is
+      // safer than treating syntax as an executable word.
+      case "lparen": case "rparen": case "lbrace": case "rbrace": cut(); break;
+      case "bang": case "eof": break;
     }
-
-    // Inside double quotes — $ ` " \ \n are special
-    if (dq) {
-      if (c === "\\" && "$`\"\\\n".includes(n)) { esc = true; continue; }
-      if (c === '"') dq = false;
-      else tok += c;
-      continue;
-    }
-
-    // Quote start
-    if (c === "'") { sq = true; continue; }
-    if (c === '"') { dq = true; continue; }
-    if (c === "\\") { esc = true; continue; }
-
-    // Whitespace
-    if (c === " " || c === "\t" || c === "\n") { flush(); continue; }
-
-    // Two-character separators
-    if (TWO_CHAR_SEPARATORS.has(n2)) { cut(); i++; continue; }
-
-    // Single-character separators
-    if (SINGLE_CHAR_SEPARATORS.has(c)) { cut(); continue; }
-
-    tok += c;
   }
-
   cut();
   return out;
 }
@@ -188,11 +167,11 @@ function isEnvAssignment(tok: string): boolean {
  *  (the `-c` argument of a c-wrapper, or the joined args of `eval`). Strict
  *  mode uses this to rescan the re-parsed source for evasion constructs that
  *  were hidden inside quotes in the original input. */
-export function unwrapCommand(
+export function unwrapCommands(
   tokens: ReadonlyArray<string>,
   wrappers?: Readonly<Record<string, WrapperDef>>,
   onReparse?: (source: string) => void,
-): string[] | null {
+): string[][] | null {
   const wm = wrappers ?? WRAPPERS;
   let i = 0;
 
@@ -202,11 +181,28 @@ export function unwrapCommand(
 
     if (!def) {
       // Not a wrapper — whatever's left is the effective command
-      return tokens.slice(i);
+      return [tokens.slice(i)];
     }
 
     if (def.kind === "passthrough") {
       i++; // consume wrapper name
+
+      // flock -c/--command reparses its value as shell source; unlike its
+      // lock-file form it has no command token after the option.
+      if (name === "flock") {
+        for (let j = i; j < tokens.length; j++) {
+          if (tokens[j] === "-c" || tokens[j] === "--command") {
+            const source = tokens[j + 1];
+            if (source === undefined) return null;
+            onReparse?.(source);
+            const segments = splitCommands(source);
+            const unwrapped = segments.map((seg) => unwrapCommands(seg, wm, onReparse));
+            return unwrapped.every((commands): commands is string[][] => commands !== null)
+              ? unwrapped.flat()
+              : null;
+          }
+        }
+      }
 
       // env: consume flags and VAR=val assignments (interleaved, any order)
       if (name === "env") {
@@ -257,13 +253,11 @@ export function unwrapCommand(
           const subCmd = tokens[i];
           // The wrapper re-parses this string — let strict mode rescan it.
           onReparse?.(subCmd);
-          // Re-tokenize the -c argument as a shell command
-          const segments = splitCommands(subCmd);
-          // Unwrap the first non-empty segment recursively
-          for (const seg of segments) {
-            if (seg.length > 0) return unwrapCommand(seg, wm, onReparse);
-          }
-          return null;
+          // Re-tokenize and check every command the shell will execute.
+          const commands = splitCommands(subCmd).map((seg) => unwrapCommands(seg, wm, onReparse));
+          return commands.every((value): value is string[][] => value !== null)
+            ? commands.flat()
+            : null;
         }
 
         // Not -c: consume flag (and possibly its value)
@@ -286,15 +280,25 @@ export function unwrapCommand(
       const joined = rest.join(" ");
       // The wrapper re-parses this string — let strict mode rescan it.
       onReparse?.(joined);
-      for (const seg of splitCommands(joined)) {
-        if (seg.length > 0) return unwrapCommand(seg, wm, onReparse);
-      }
-      return null;
+      const commands = splitCommands(joined).map((seg) => unwrapCommands(seg, wm, onReparse));
+      return commands.every((value): value is string[][] => value !== null)
+        ? commands.flat()
+        : null;
     }
   }
 
   // All tokens consumed by wrappers, nothing left
   return null;
+}
+
+/** Backwards-compatible convenience for callers interested in a single command.
+ * Deep checking uses `unwrapCommands` so no wrapper payload segment is lost. */
+export function unwrapCommand(
+  tokens: ReadonlyArray<string>,
+  wrappers?: Readonly<Record<string, WrapperDef>>,
+  onReparse?: (source: string) => void,
+): string[] | null {
+  return unwrapCommands(tokens, wrappers, onReparse)?.[0] ?? null;
 }
 
 /**
@@ -305,12 +309,8 @@ export function unwrapCommand(
  * "pass" if the last matching rule is an allow or no rule matched.
  */
 export function evaluate(tokens: ReadonlyArray<string>, patterns: ReadonlyArray<Pattern>): Verdict {
-  let last: boolean | undefined;
-  for (const p of patterns) {
-    if (matchPattern(tokens, p.tokens)) last = p.allow;
-  }
-  if (last === undefined) return "pass";
-  return last ? "pass" : "deny";
+  const match = findMatch(tokens, patterns);
+  return match && !match.allow ? "deny" : "pass";
 }
 
 // ── Rule file parser ───────────────────────────────────────────────
@@ -348,6 +348,33 @@ export function mergePatterns(...lists: ReadonlyArray<ReadonlyArray<Pattern>>): 
 
 /** Find the last matching pattern, or undefined if none match.
  *  `caseInsensitive` is forwarded to `matchPattern` (strict mode). */
+/** Allow-exceptions are deliberately narrower than deny patterns. A deny can
+ * scan forward through arbitrary arguments, but an allow must name the actual
+ * executable and cannot skip a positional argument to reach a later token.
+ * This prevents `! kubectl logs` from authorizing `kubectl delete pod logs`.
+ */
+function matchAllowPattern(
+  tokens: ReadonlyArray<string>,
+  pat: ReadonlyArray<string>,
+  caseInsensitive: boolean,
+): boolean {
+  if (tokens.length < pat.length || pat.length === 0) return false;
+  const equal = (left: string, right: string) => caseInsensitive
+    ? left.toLowerCase() === right.toLowerCase()
+    : left === right;
+  if (!equal(tokens[0], pat[0])) return false;
+
+  let index = 1;
+  for (let p = 1; p < pat.length; p++) {
+    // Options may be interspersed, but a positional argument may not: it
+    // changes the command/subcommand being authorized.
+    while (index < tokens.length && isFlag(tokens[index])) index++;
+    if (index >= tokens.length || !equal(tokens[index], pat[p])) return false;
+    index++;
+  }
+  return true;
+}
+
 export function findMatch(
   tokens: ReadonlyArray<string>,
   patterns: ReadonlyArray<Pattern>,
@@ -355,7 +382,10 @@ export function findMatch(
 ): Pattern | undefined {
   let last: Pattern | undefined;
   for (const p of patterns) {
-    if (matchPattern(tokens, p.tokens, caseInsensitive)) last = p;
+    const matches = p.allow
+      ? matchAllowPattern(tokens, p.tokens, caseInsensitive)
+      : matchPattern(tokens, p.tokens, caseInsensitive);
+    if (matches) last = p;
   }
   return last;
 }

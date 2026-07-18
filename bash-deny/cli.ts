@@ -15,9 +15,10 @@ import { checkCommandDeep } from "./parser";
 import { readFileSync, existsSync, realpathSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
+import packageJson from "../package.json" with { type: "json" };
 
 // ── Version ──────────────────────────────────────────────────────
-const VERSION = "0.2.0";
+const VERSION = packageJson.version;
 
 // ── Usage ────────────────────────────────────────────────────────
 
@@ -126,7 +127,7 @@ function reportVerdict(v: CommandVerdict, dryRun: boolean, quiet: boolean): bool
 // ── Main ─────────────────────────────────────────────────────────
 
 function main(): void {
-  let values: Record<string, unknown>;
+  let values: Record<string, unknown> = {};
   try {
     const parsed = parseArgs({
       args: process.argv.slice(2),

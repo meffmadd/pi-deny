@@ -1,4 +1,4 @@
-import { findMatch, normalizeCommandWord, splitCommands, unwrapCommand, type Pattern, type WrapperDef } from "./engine";
+import { findMatch, normalizeCommandWord, splitCommands, unwrapCommands, type Pattern, type WrapperDef } from "./engine";
 import { detectStrictConstruct, isPathCommand, type CheckOptions, type StrictViolation } from "./strict";
 
 export type ReservedWord =
@@ -90,7 +90,12 @@ function evalAnsiCEscape(input: string, bi: number): { value: string; consumed: 
       let hex = "";
       let k = 0;
       while (k < 4 && /[0-9a-fA-F]/.test(input[bi + 2 + k] ?? "")) { hex += input[bi + 2 + k]; k++; }
-      if (hex) return { value: String.fromCodePoint(parseInt(hex, 16)), consumed: 2 + k };
+      if (hex) {
+        const point = parseInt(hex, 16);
+        return point <= 0x10ffff
+          ? { value: String.fromCodePoint(point), consumed: 2 + k }
+          : { value: "\\u" + hex, consumed: 2 + k };
+      }
       return { value: "\\u", consumed: 2 };
     }
     case "U": {
@@ -98,7 +103,12 @@ function evalAnsiCEscape(input: string, bi: number): { value: string; consumed: 
       let hex = "";
       let k = 0;
       while (k < 8 && /[0-9a-fA-F]/.test(input[bi + 2 + k] ?? "")) { hex += input[bi + 2 + k]; k++; }
-      if (hex) return { value: String.fromCodePoint(parseInt(hex, 16)), consumed: 2 + k };
+      if (hex) {
+        const point = parseInt(hex, 16);
+        return point <= 0x10ffff
+          ? { value: String.fromCodePoint(point), consumed: 2 + k }
+          : { value: "\\U" + hex, consumed: 2 + k };
+      }
       return { value: "\\U", consumed: 2 };
     }
     case "c": {
@@ -165,7 +175,7 @@ class TokenizeState {
 
 
 export function tokenize(_input: string): Tok[] {
-  let state = new TokenizeState(_input);
+  const state = new TokenizeState(_input);
   while (!state.done()) {
     const b: string = state.input[state.i];
     if (state.esc) {
@@ -253,7 +263,9 @@ export function tokenize(_input: string): Tok[] {
           break;
         case "#":
           if (!state.tok) {          
-            for(state.i; (!state.done() && state.input[state.i] !== "\n"); state.i++) {}
+            for (; !state.done() && state.input[state.i] !== "\n"; state.i++) {
+              // Skip comment text; the loop index is the only state change.
+            }
             state.i--; // stop on character before new line; while-loop increment then move it to point to \n again
           } else {
             state.tok += b;
@@ -444,7 +456,7 @@ export function parseSimple(state: ParserState): {kind: "simple", tokens: string
 }
 
 export function parsePipeline(state: ParserState): {kind: "pipeline", bang: boolean, commands: Node[]} {
-  const pipeline = {kind: "pipeline" as "pipeline", bang: false, commands: [] as Node[]};
+  const pipeline = {kind: "pipeline" as const, bang: false, commands: [] as Node[]};
   if (state.peek().kind === "bang") {
     pipeline.bang = true;
     state.consume();
@@ -464,10 +476,9 @@ export function parsePipeline(state: ParserState): {kind: "pipeline", bang: bool
 export function parseAndOr(state: ParserState): Node  {
   let left: Node = parsePipeline(state);
   let op = state.peek();
-  let right: Node | undefined = undefined;
   while (op.kind === "op" && (op.value === "&&" || op.value == "||")) {
     state.consume(); // op
-    right = parsePipeline(state);
+    const right = parsePipeline(state);
     left = {kind: "andor", left, op: op.value, right}
     op = state.peek();
   }
@@ -501,7 +512,7 @@ function isOpener(tok: Tok): boolean {
 export function parseList(state: ParserState): Node {
   const items: Node[] = [parseAndOr(state)];
   let op = state.peek();
-  while (op.kind === "semi" || op.kind === "amp" || op.kind === "nl") {
+  while (op.kind === "semi" || op.kind === "amp" || op.kind === "nl") {
     state.consume();
     if (isCloser(state.peek())) break;
     items.push(parseAndOr(state));
@@ -689,11 +700,50 @@ export function* leaves(node: Node): Generator<string[]> {
   }
 }
 
-/** Top-level entry: tokenize input and parse it as a list. */
-function parse(input: string): Node {
-  const tokens = tokenize(input);
-  const state = new ParserState(tokens);
-  return parseList(state);
+/** Remove simple-command prefixes before resolving its executable. Shell
+ * assignments and redirections are setup, not command words. */
+function stripCommandPrefixes(tokens: ReadonlyArray<string>): string[] {
+  let i = 0;
+  while (i < tokens.length) {
+    const token = tokens[i];
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(token)) { i++; continue; }
+    // A redirection may be a standalone operator followed by a target, or a
+    // single shell word such as `2>out` / `>out`.
+    if (/^(?:\d+)?(?:>>?|<<<?|<>|>&|<&)$/.test(token)) { i += 2; continue; }
+    if (/^(?:\d+)?(?:>>?|<<<?|<>|>&|<&).+/.test(token)) { i++; continue; }
+    break;
+  }
+  return tokens.slice(i);
+}
+
+/** Check one parsed command leaf, including every command re-parsed by a
+ * wrapper. Kept shared by the deep AST and fallback paths. */
+function checkTokens(
+  tokens: string[],
+  patterns: ReadonlyArray<Pattern>,
+  wrappers: Readonly<Record<string, WrapperDef>> | undefined,
+  strict: boolean,
+  basename: boolean,
+): string | undefined {
+  const h = strict ? reparseHandler() : undefined;
+  const command = stripCommandPrefixes(tokens);
+  if (command.length === 0) return undefined;
+  const unwrapped = unwrapCommands(command, wrappers, h?.onReparse);
+  if (h?.violation()) return `(strict: ${h.violation()!.construct})`;
+  if (unwrapped === null) return "(invalid wrapper usage)";
+
+  for (const underlying of unwrapped) {
+    const effectiveCommand = stripCommandPrefixes(underlying);
+    if (effectiveCommand.length === 0) continue;
+    let effective = effectiveCommand;
+    if (isPathCommand(effectiveCommand)) {
+      if (basename) effective = [normalizeCommandWord(effectiveCommand[0]), ...effectiveCommand.slice(1)];
+      else if (strict) return "(strict: path-based command)";
+    }
+    const match = findMatch(effective, patterns, strict);
+    if (match && !match.allow) return match.raw;
+  }
+  return undefined;
 }
 
 /**
@@ -742,24 +792,8 @@ export function checkCommandDeep(
     if (state.peek().kind === "eof") {
       for (const leaf of leaves(ast)) {
         if (leaf.length === 0) continue;
-        const h = strict ? reparseHandler() : undefined;
-        const unwrapped = unwrapCommand(leaf, wrappers, h?.onReparse);
-        if (h && h.violation()) {
-          return { tokens: leaf, rule: `(strict: ${h.violation()!.construct})` };
-        }
-        if (unwrapped === null) return { tokens: leaf, rule: "(invalid wrapper usage)" };
-        // Path-based command word: normalize (--basename) or block (-s).
-        // --basename supersedes -s's path block — when both are set, normalize.
-        let effective = unwrapped;
-        if (isPathCommand(unwrapped)) {
-          if (basename) {
-            effective = [normalizeCommandWord(unwrapped[0]), ...unwrapped.slice(1)];
-          } else if (strict) {
-            return { tokens: leaf, rule: "(strict: path-based command)" };
-          }
-        }
-        const match = findMatch(effective, patterns, strict);
-        if (match && !match.allow) return { tokens: leaf, rule: match.raw };
+        const rule = checkTokens(leaf, patterns, wrappers, strict, basename);
+        if (rule) return { tokens: leaf, rule };
       }
       return undefined;
     }
@@ -800,23 +834,8 @@ function checkCommandShallow(
   const basename = options?.basename ?? false;
   for (const tokens of splitCommands(input)) {
     if (tokens.length === 0) continue;
-    const h = strict ? reparseHandler() : undefined;
-    const unwrapped = unwrapCommand(tokens, wrappers, h?.onReparse);
-    if (h && h.violation()) {
-      return { tokens, rule: `(strict: ${h.violation()!.construct})` };
-    }
-    if (unwrapped === null) return { tokens, rule: "(invalid wrapper usage)" };
-    // Path-based command word: normalize (--basename) or block (-s).
-    let effective = unwrapped;
-    if (isPathCommand(unwrapped)) {
-      if (basename) {
-        effective = [normalizeCommandWord(unwrapped[0]), ...unwrapped.slice(1)];
-      } else if (strict) {
-        return { tokens, rule: "(strict: path-based command)" };
-      }
-    }
-    const match = findMatch(effective, patterns, strict);
-    if (match && !match.allow) return { tokens, rule: match.raw };
+    const rule = checkTokens(tokens, patterns, wrappers, strict, basename);
+    if (rule) return { tokens, rule };
   }
   return undefined;
 }

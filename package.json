@@ -5,9 +5,10 @@
   "type": "module",
   "main": "./bash-deny/engine.ts",
   "bin": {
-    "bash-deny": "./bash-deny/cli.ts"
+    "bash-deny": "./dist/bash-deny.js"
   },
   "files": [
+    "dist/",
     "bash-deny/",
     "AGENTS.md"
   ],
@@ -17,7 +18,9 @@
   "scripts": {
     "lint": "eslint bash-deny tests scripts",
     "test": "node --import tsx --test tests/*.test.ts tests/scenarios/*.test.ts tests/cli/*.test.ts tests/parser/*.test.ts",
-    "bench": "node --import tsx scripts/bench.ts"
+    "bench": "node --import tsx scripts/bench.ts",
+    "build": "esbuild bash-deny/cli.ts --bundle --platform=node --format=esm --banner:js='#!/usr/bin/env node' --outfile=dist/bash-deny.js",
+    "prepack": "npm run build"
   },
   "keywords": [
     "shell",
@@ -29,6 +32,8 @@
   "license": "MIT",
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@types/node": "^25.9.5",
+    "esbuild": "^0.28.1",
     "eslint": "^10.4.1",
     "eslint-plugin-functional": "^10.0.0",
     "tsx": "^4.0.0",

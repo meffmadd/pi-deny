@@ -188,7 +188,7 @@ describe("red team: strict mode blocks all limitations", () => {
   );
 
   for (const { label, technique, cmd, limitation } of limitations) {
-    it(`STRICT BLOCKS (${technique}): ${cmd}`, () => {
+    it(`STRICT BLOCKS (${label} / ${technique}): ${cmd}`, () => {
       assertShSyntax(cmd);
 
       const result = checkCommandDeep(cmd, rules, undefined, { strict: true });

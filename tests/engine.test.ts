@@ -496,3 +496,47 @@ describe("normalizeCommandWord", () => {
     });
   }
 });
+
+// ═══════════════════════════════════════════════════════════════════
+// Review regressions
+// ═══════════════════════════════════════════════════════════════════
+
+describe("review regressions", () => {
+  const rmRules = [parseLine("rm -rf")];
+  const cases: [string, boolean, boolean?][] = [
+    // ── every wrapper payload segment is checked ───────────────────
+    ["bash -c 'echo safe; rm -rf /'", true],
+    ["eval 'echo safe; rm -rf /'", true],
+    ["flock -c 'rm -rf /'", true],
+
+    // ── command prefixes do not hide the executable ───────────────
+    ["FOO=x /bin/rm -rf /", true, true],
+    [">out /bin/rm -rf /", true, true],
+    ["command /bin/rm -rf /", true, true],
+    ["exec /bin/rm -rf /", true, true],
+    ["env -u FOO /bin/rm -rf /", true, true],
+    ["systemd-run --user /bin/rm victim", true, true],
+
+    // ── canonical lexer is used for payloads and fallback ─────────
+    ["bash -c \"$'rm' -rf /\"", true],
+    ["f() { echo ok; }; $'rm' -rf /", true],
+
+    // ── malformed ANSI-C Unicode remains non-fatal ─────────────────
+    ["$'\\UFFFFFFFF'", false],
+  ];
+
+  for (const [input, denied, strict] of cases) {
+    it(`${JSON.stringify(input)} → ${denied ? "deny" : "pass"}`, () => {
+      assert.strictEqual(
+        checkCommandDeep(input, rmRules, undefined, { strict: strict ?? false }) !== undefined,
+        denied,
+      );
+    });
+  }
+
+  it("allow-exceptions cannot skip positional arguments", () => {
+    const rules = [parseLine("kubectl"), parseLine("! kubectl logs")];
+    assert.ok(checkCommandDeep("kubectl delete pod logs", rules));
+    assert.strictEqual(checkCommandDeep("kubectl logs pod", rules), undefined);
+  });
+});
