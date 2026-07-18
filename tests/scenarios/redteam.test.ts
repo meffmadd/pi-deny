@@ -51,9 +51,13 @@ function canonicalHash(cmd: string): string {
 interface Attempt {
   technique: string;
   cmd: string;
-  // If set, this evasion technique is a known limitation (out of scope per
-  // parser.md §2) — marked as todo, not a regression.
+  // If set, this evasion technique is a known plain-mode limitation that
+  // strict mode is expected to close — marked as todo, not a regression.
   limitation?: string;
+  // If set, this is a confirmed bypass even in strict mode. These stay as
+  // executable todo tests so they document shell-verified development gaps
+  // without making the normal test suite fail.
+  strictLimitation?: string;
 }
 
 interface RuleSuite {
@@ -91,6 +95,21 @@ const suites: RuleSuite[] = [
       { technique: "inline ANSI-C",                cmd: `l$'\\163' /tmp` },
       { technique: "uppercase",                    cmd: "LS /tmp", limitation: "case-sensitive matching (no case normalization)" },
       { technique: "mixed case",                   cmd: "Ls /tmp", limitation: "case-sensitive matching (no case normalization)" },
+
+      // Confirmed strict-mode bypasses — executable TODOs below document
+      // unsupported lexical forms, shell state, and indirect executors.
+      { technique: "locale-translated quoting",    cmd: '$"ls" /tmp', strictLimitation: "$\"...\" quoting is not decoded by the lexer" },
+      { technique: "line continuation in $()",     cmd: '"$\\\n(echo ls)" /tmp', strictLimitation: "strict scanning happens before backslash-newline removal" },
+      { technique: "eval option terminator",       cmd: "eval -- 'ls /tmp'", strictLimitation: "eval unwrapping treats -- as payload text instead of an option terminator" },
+      { technique: "builtin hides wrapper",        cmd: "builtin eval 'ls /tmp'", strictLimitation: "builtin is not modeled as a passthrough wrapper" },
+      { technique: "EXIT trap",                    cmd: "trap 'ls /tmp' EXIT", strictLimitation: "trap payloads are executable shell source but are not reparsed" },
+      { technique: "sourced here-doc",             cmd: "source /dev/stdin <<'EOF'\nls /tmp\nEOF", strictLimitation: "source/dot can execute a here-doc body that is otherwise treated as data" },
+      { technique: "variable command word",        cmd: 'v=ls; "$v" /tmp', strictLimitation: "plain $VAR command words are deliberately allowed" },
+      { technique: "hash command remap",           cmd: "hash -p /bin/ls x; x /tmp", strictLimitation: "runtime command-name remapping is not tracked" },
+      { technique: "alias command remap",          cmd: "shopt -s expand_aliases\nalias x=ls\nx /tmp", strictLimitation: "runtime alias definitions are not tracked" },
+      { technique: "find -exec",                   cmd: "find /dev/null -exec ls /tmp ';'", strictLimitation: "indirect command executors are not modeled" },
+      { technique: "xargs",                        cmd: "printf /tmp | xargs ls", strictLimitation: "indirect command executors are not modeled" },
+      { technique: "awk system()",                 cmd: "awk 'BEGIN { system(\"ls /tmp\") }'", strictLimitation: "embedded interpreter payloads are opaque" },
     ],
   },
   {
@@ -125,48 +144,52 @@ const suites: RuleSuite[] = [
 // Green ✓ = caught.  Red ✖ = bypassed (vulnerability report).
 // ═══════════════════════════════════════════════════════════════════
 
+function assertAttemptBlocked(suite: RuleSuite, attempt: Attempt, strict = false): void {
+  const { technique, cmd } = attempt;
+
+  // Sanity gate: bash itself must accept the syntax.
+  // If it doesn't, the test command is malformed — not a parser bypass.
+  assertShSyntax(cmd);
+
+  const result = checkCommandDeep(cmd, rules, undefined, strict ? { strict: true } : undefined);
+  const tokens = splitCommands(cmd).map(t => `[${t.join(" ")}]`).join(" ");
+
+  // Build vulnerability report (only shown when red ✖)
+  const lines: string[] = [
+    `BYPASS CONFIRMED${strict ? " IN STRICT MODE" : ""}: "${cmd}" slips past the rule!`,
+    `  Technique: ${technique}`,
+    `  Tokens: ${tokens}`,
+  ];
+
+  if (bashOk) {
+    try {
+      const cHash = canonicalHash(suite.canonical);
+      const aHash = sha(sh(cmd));
+      assert.strictEqual(aHash, cHash, "Shell output mismatch!");
+      lines.push(`  Exploitable: produces identical shell output (sha ${aHash}).`);
+    } catch (err: unknown) {
+      lines.push(`  Shell exec failed: ${(err as Error).message}.`);
+    }
+  }
+
+  assert.notStrictEqual(result, undefined, lines.join("\n"));
+}
+
 describe("red team: vulnerabilities", () => {
   for (const suite of suites) {
     describe(`rule: ${suite.label}`, () => {
-      for (const { technique, cmd, limitation } of suite.attempts) {
+      for (const attempt of suite.attempts) {
+        const { technique, cmd, limitation, strictLimitation } = attempt;
+        if (strictLimitation) {
+          it.todo(`KNOWN STRICT LIMITATION (${technique}): ${cmd} — ${strictLimitation}`);
+          continue;
+        }
         if (limitation) {
           it.todo(`KNOWN LIMITATION (${technique}): ${cmd} — ${limitation}`);
           continue;
         }
         it(`SHOULD BLOCK (${technique}): ${cmd}`, () => {
-          // Sanity gate: bash itself must accept the syntax.
-          // If it doesn't, the test command is malformed — not a parser bypass.
-          assertShSyntax(cmd);
-
-          const result = checkCommandDeep(cmd, rules);
-          const tokens = splitCommands(cmd).map(t => `[${t.join(" ")}]`).join(" ");
-
-          // Build vulnerability report (only shown when red ✖)
-          const lines: string[] = [
-            `BYPASS CONFIRMED: "${cmd}" slips past the rule!`,
-            `  Tokens: ${tokens}`,
-          ];
-
-          if (bashOk) {
-            try {
-              const cHash = canonicalHash(suite.canonical);
-              const aHash = sha(sh(cmd));
-              assert.strictEqual(
-                aHash,
-                cHash,
-                `Shell output mismatch!`
-              );
-              lines.push(`  Exploitable: produces identical shell output (sha ${aHash}).`);
-            } catch (err: unknown) {
-              lines.push(`  Shell exec failed: ${(err as Error).message}.`);
-            }
-          }
-
-          assert.notStrictEqual(
-            result,
-            undefined,
-            lines.join("\n")
-          );
+          assertAttemptBlocked(suite, attempt);
         });
       }
     });
@@ -174,16 +197,17 @@ describe("red team: vulnerabilities", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════
-// Strict mode — `--strict` closes every known limitation above.
+// Strict mode — `--strict` closes the known plain-mode limitations above.
 // Every `limitation` case that slips past the plain matcher MUST be blocked
-// when strict mode is on.
+// when strict mode is on; `strictLimitation` cases are tracked separately.
 // ═══════════════════════════════════════════════════════════════════
 
-describe("red team: strict mode blocks all limitations", () => {
-  // Flatten every marked limitation across all suites.
+describe("red team: strict mode blocks plain-mode limitations", () => {
+  // Flatten limitations that strict mode is expected to close. Confirmed
+  // strict-mode gaps are tracked separately by executable TODOs below.
   const limitations = suites.flatMap((s) =>
     s.attempts
-      .filter((a) => a.limitation)
+      .filter((a) => a.limitation && !a.strictLimitation)
       .map((a) => ({ label: s.label, ...a }))
   );
 
@@ -215,6 +239,27 @@ describe("red team: strict mode blocks all limitations", () => {
         undefined
       );
     });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// Remaining strict-mode gaps. These TODO callbacks intentionally execute: a
+// failing TODO prints a shell-verified bypass report but does not fail CI. Once
+// a defense lands, the corresponding TODO passes and can be promoted above.
+// ═══════════════════════════════════════════════════════════════════
+
+describe("red team: known strict-mode limitations", () => {
+  const limitations = suites.flatMap((suite) =>
+    suite.attempts
+      .filter((attempt) => attempt.strictLimitation)
+      .map((attempt) => ({ suite, attempt }))
+  );
+
+  for (const { suite, attempt } of limitations) {
+    it.todo(
+      `STRICT SHOULD BLOCK (${suite.label} / ${attempt.technique}): ${attempt.cmd} — ${attempt.strictLimitation}`,
+      () => assertAttemptBlocked(suite, attempt, true),
+    );
   }
 });
 
