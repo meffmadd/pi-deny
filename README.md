@@ -9,7 +9,13 @@ bash-deny -f rules.txt -i "kubectl delete pod"
 ## Install
 
 ```bash
-npm install -g .
+npm install --global @meffmadd/bash-deny
+```
+
+Or run it without installing:
+
+```bash
+npx @meffmadd/bash-deny -r "rm -rf" -i "rm -rf /tmp/example"
 ```
 
 Requires Node.js >= 20.

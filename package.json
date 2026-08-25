@@ -1,7 +1,18 @@
 {
-  "name": "bash-deny",
-  "version": "0.2.0",
+  "name": "@meffmadd/bash-deny",
+  "version": "0.1.0",
   "description": "Gitignore-like shell command blocklist for CI, pre-commit hooks, and interactive use.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/meffmadd/bash-deny.git"
+  },
+  "homepage": "https://github.com/meffmadd/bash-deny#readme",
+  "bugs": {
+    "url": "https://github.com/meffmadd/bash-deny/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "bin": {
     "bash-deny": "./dist/bash-deny.js"
@@ -13,14 +24,18 @@
   "engines": {
     "node": ">=20"
   },
+  "license": "MIT",
   "scripts": {
     "lint": "eslint bash-deny tests scripts",
     "typecheck": "tsc --noEmit",
+    "pretest": "npm run typecheck && npm run lint",
     "test": "node --import tsx --test tests/*.test.ts tests/scenarios/*.test.ts tests/cli/*.test.ts tests/parser/*.test.ts",
+    "check": "npm test",
     "bench": "node --import tsx scripts/bench.ts",
     "clean": "node --input-type=module -e \"import { rmSync } from 'node:fs'; rmSync('dist', { recursive: true, force: true })\"",
-    "build": "esbuild bash-deny/cli.ts --bundle --platform=node --format=esm --banner:js='#!/usr/bin/env node' --outfile=dist/bash-deny.js",
-    "prepack": "npm run clean && npm run build"
+    "build": "esbuild bash-deny/cli.ts --bundle --platform=node --format=esm --banner:js='#!/usr/bin/env node' --outfile=dist/bash-deny.js && node --input-type=module -e \"import { chmodSync } from 'node:fs'; chmodSync('dist/bash-deny.js', 0o755)\"",
+    "prepack": "npm run clean && npm run build",
+    "release:bump": "bumpp --commit \"chore: release {tag}\" --tag \"v{version}\" --push --git-check --execute \"npm run check\""
   },
   "keywords": [
     "shell",
@@ -32,6 +47,7 @@
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@types/node": "^25.9.5",
+    "bumpp": "^12.2.1",
     "esbuild": "^0.28.1",
     "eslint": "^10.4.1",
     "eslint-plugin-functional": "^10.0.0",

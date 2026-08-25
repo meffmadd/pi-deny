@@ -146,10 +146,10 @@ bash-deny -s -f .pi/.bashdeny -i "kubectl delete pod"
 
 ```bash
 # Global install
-npm install -g .
+npm install --global @meffmadd/bash-deny
 
 # Or run directly with npx
-npx tsx bash-deny/cli.ts -f rules.txt -i "kubectl delete pod"
+npx @meffmadd/bash-deny -f rules.txt -i "kubectl delete pod"
 ```
 
 Requires Node.js >= 20 (for `util.parseArgs`).
@@ -158,16 +158,18 @@ Requires Node.js >= 20 (for `util.parseArgs`).
 
 ```bash
 npm install
-npm test                 # engine + scenarios + CLI tests
+npm run check            # typecheck + lint + all tests + package verification
 ```
 
 ## Release
 
 ```bash
-npx bumpp               # prompts for patch/minor/major, commits + tags
-npx bumpp 1.2.3          # exact version
-npx bumpp -y             # skip confirmation
+npm run release:bump -- --release patch
 ```
+
+Use `minor`, `major`, or an exact version instead of `patch` when appropriate.
+The npm script runs the complete check, updates the manifests, commits, tags,
+and pushes the release.
 
 ## Structure
 

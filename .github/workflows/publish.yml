@@ -1,0 +1,52 @@
+name: publish npm
+
+on:
+  release:
+    types: [released]
+
+concurrency:
+  group: npm-publish-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    uses: ./.github/workflows/_verify.yml
+    permissions:
+      contents: read
+
+  publish:
+    needs: verify
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          registry-url: https://registry.npmjs.org
+      - run: npm ci
+      - name: Verify release tag matches package version
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          node <<'NODE'
+          const { version } = require("./package.json");
+          const expectedTag = `v${version}`;
+          if (process.env.RELEASE_TAG !== expectedTag) {
+            console.error(`release tag ${process.env.RELEASE_TAG} does not match ${expectedTag}`);
+            process.exit(1);
+          }
+          NODE
+      # dist/ is generated and gitignored, so build it before inspecting the artifact.
+      - run: npm run build
+      - run: npm pack --dry-run --ignore-scripts
+      - name: Publish to npm
+        run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

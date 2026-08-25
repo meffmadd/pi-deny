@@ -1,4 +1,3 @@
-#!/usr/bin/env tsx
 /**
  * bash-deny — CLI shell command guard
  *
