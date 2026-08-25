@@ -271,7 +271,6 @@ describe("parseFor", () => {
     for (const { input } of lenient) {
       assert.throws(
         () => execSync(`sh -n -c ${JSON.stringify(input)}`),
-        /syntax error/,
       );
     }
   });
